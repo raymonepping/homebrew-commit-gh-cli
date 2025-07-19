@@ -13,8 +13,8 @@ VERIFY_MODE=false
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --help|-h)
-      cat <<EOF
+  --help | -h)
+    cat <<EOF
 Usage: commit_gh [--quiet] [--tree true|false] [--bump patch|minor|major]
 
 Automates common Git commit and push operations with smart handling:
@@ -39,39 +39,39 @@ Examples:
   ./commit_gh.sh --tree true
   ./commit_gh.sh --tree false
 EOF
-      exit 0
+    exit 0
+    ;;
+  --quiet | -q)
+    QUIET=1
+    ;;
+  --bump)
+    case "${2:-patch}" in
+    patch | minor | major)
+      BUMP_TYPE="$2"
+      shift
       ;;
-    --quiet|-q)
-      QUIET=1
+    *)
+      echo "❌ Invalid value for --bump. Use: patch | minor | major"
+      exit 1
       ;;
-    --bump)
-      case "${2:-patch}" in
-        patch|minor|major)
-          BUMP_TYPE="$2"
-          shift
-          ;;
-        *)
-          echo "❌ Invalid value for --bump. Use: patch | minor | major"
-          exit 1
-          ;;
-      esac
-      ;;   
-    --preview)
-      PREVIEW_MODE=true
-      ;;
-    --verify)
-      VERIFY_MODE=true
-      ;;            
-    --tree)
-      # If the next argument is not another flag and exists, check its value
-      if [[ "${2:-}" =~ ^(true|false)$ ]]; then
-        [[ "$2" == "true" ]] && GENERATE_TREE=1
-        shift
-      else
-        # No value given → default to true
-        GENERATE_TREE=1
-      fi
-      ;;
+    esac
+    ;;
+  --preview)
+    PREVIEW_MODE=true
+    ;;
+  --verify)
+    VERIFY_MODE=true
+    ;;
+  --tree)
+    # If the next argument is not another flag and exists, check its value
+    if [[ "${2:-}" =~ ^(true|false)$ ]]; then
+      [[ "$2" == "true" ]] && GENERATE_TREE=1
+      shift
+    else
+      # No value given → default to true
+      GENERATE_TREE=1
+    fi
+    ;;
   esac
   shift
 done
@@ -197,11 +197,11 @@ if [[ "$VERIFY_MODE" == true ]]; then
   # 3. .version file check and (optional) creation
   if [[ ! -f .version ]]; then
     latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
-    echo "$latest_tag" > .version
+    echo "$latest_tag" >.version
     version_file="$latest_tag"
     msg "🆕 .version file not found — created with: $latest_tag"
   else
-    version_file=$(< .version)
+    version_file=$(<.version)
     msg "✅ .version file found: $version_file"
   fi
 
@@ -254,18 +254,18 @@ if [[ -n "$BUMP_TYPE" || "$PREVIEW_MODE" == true ]]; then
   fi
 
   case "$BUMP_TYPE" in
-    patch)
-      ((patch++))
-      ;;
-    minor)
-      ((minor++))
-      patch=0
-      ;;
-    major)
-      ((major++))
-      minor=0
-      patch=0
-      ;;
+  patch)
+    ((patch++))
+    ;;
+  minor)
+    ((minor++))
+    patch=0
+    ;;
+  major)
+    ((major++))
+    minor=0
+    patch=0
+    ;;
   esac
 
   new_tag="v$major.$minor.$patch"
@@ -289,6 +289,6 @@ if [[ -n "$BUMP_TYPE" || "$PREVIEW_MODE" == true ]]; then
   git tag -a "$new_tag" -m "Release $new_tag" >/dev/null
   git push origin "$new_tag" >/dev/null
   msg "✅ Pushed tag $new_tag successfully."
-  echo "$new_tag" > .version
+  echo "$new_tag" >.version
   msg "📝 Wrote version to .version"
 fi
