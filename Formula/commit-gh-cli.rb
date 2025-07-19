@@ -1,35 +1,32 @@
-class FolderTreeCli < Formula
+class CommitGhCli < Formula
   desc "CLI toolkit for visualizing folder structures with markdown reports"
-  homepage "https://github.com/raymonepping/folder_tree_cli"
-  url "https://github.com/raymonepping/homebrew-folder-tree-cli/archive/refs/tags/v1.0.29.tar.gz"
-  sha256 "bad3a8eb3a0ac050855b7a59b27ee06e90f24301260de7a9e6aad7701f1101f5"
+  homepage "https://github.com/raymonepping/commit_gh_cli"
+  url "https://github.com/raymonepping/homebrew-commit-gh-cli/archive/refs/tags/v0.0.2.tar.gz"
+  sha256 "552de6f4f9ef778906ae30e963929233da8a8efdeb5ea762dcf0fa8364e1b279"
   license "MIT"
-  version "1.0.29"
+  version "0.0.2"
 
   depends_on "bash"
 
   def install
-    bin.install "bin/folder_tree" => "folder_tree"
-    pkgshare.install "lib", "tpl"
+    bin.install "bin/commit_gh" => "commit_gh"
     doc.install "README.md"
   end
 
   def caveats
     <<~EOS
       To get started, run:
-        folder_tree --help
+        commit_gh --help
 
-      If you want to customize or extend templates/configs,
-      set this variable in your shell:
-        export FOLDER_TREE_HOME=#{opt_pkgshare}
+      This CLI helps manage Git commits, tags, and semantic versioning.
+      It uses a .version file for tracking current state.
 
-      All shared scripts and templates are available in:
-        #{opt_pkgshare}/lib
-        #{opt_pkgshare}/tpl
+      Example usage:
+        commit_gh --bump patch --verify
     EOS
   end
 
   test do
-    assert_match "folder_tree", shell_output("#{bin}/folder_tree --version")
+    assert_match "commit_gh", shell_output("#{bin}/commit_gh --help")
   end
 end
