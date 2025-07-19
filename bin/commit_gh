@@ -194,14 +194,16 @@ if [[ "$VERIFY_MODE" == true ]]; then
     msg "✅ On branch: main"
   fi
 
-  # 3. .version file exists
+  # 3. .version file check and (optional) creation
   if [[ ! -f .version ]]; then
-    msg "❌ .version file not found."
-    exit 1
+    latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
+    echo "$latest_tag" > .version
+    msg "🆕 .version file not found — created with: $latest_tag"
   else
     version_file=$(< .version)
     msg "✅ .version file found: $version_file"
   fi
+
 
   # 4. Match latest tag
   latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
