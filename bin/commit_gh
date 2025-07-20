@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.0.10"
+VERSION="1.1.0"
 
 QUIET=0
 GENERATE_TREE=0
@@ -39,6 +39,10 @@ Examples:
   ./commit_gh.sh --tree true
   ./commit_gh.sh --tree false
 EOF
+    exit 0
+    ;;
+  --version)
+    echo "commit_gh version $VERSION"
     exit 0
     ;;
   --quiet | -q)
