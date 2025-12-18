@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.8.1"
+VERSION="1.8.2"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -282,8 +282,28 @@ sync_with_remote_rebase() {
 # VERSION helpers
 update_self_version_constant() {
   local new_version="$1"
-  local self_path
+  local self_path resolved
+
   self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+  # Resolve symlink to its real file (works on macOS)
+  resolved="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$self_path" 2>/dev/null || true)"
+  if [[ -n "$resolved" ]]; then
+    self_path="$resolved"
+  fi
+
+  # If we cannot safely edit, do not crash releases
+  if [[ ! -f "$self_path" ]]; then
+    msg "⚠️ Cannot update self VERSION. Not a regular file: $self_path"
+    msg "   Tip: run releases from the repo copy: ./bin/commit_gh --release …"
+    return 0
+  fi
+
+  if [[ ! -w "$self_path" ]]; then
+    msg "⚠️ Cannot update self VERSION. File is not writable: $self_path"
+    msg "   Tip: run releases from the repo copy: ./bin/commit_gh --release …"
+    return 0
+  fi
 
   if grep -qE '^VERSION="[^"]+"' "$self_path"; then
     sed -i '' -E "s/^VERSION=\"[^\"]+\"/VERSION=\"${new_version}\"/" "$self_path"
