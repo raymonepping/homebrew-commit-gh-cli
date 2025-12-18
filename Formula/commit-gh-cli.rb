@@ -11,7 +11,6 @@ class CommitGhCli < Formula
   def install
     bin.install "bin/commit_gh" => "commit_gh"
     doc.install "README.md"
-    pkgshare.install %w[tpl]
   end
 
   def caveats
