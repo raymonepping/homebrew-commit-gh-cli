@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.6.0"
+VERSION="1.4.4"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -280,6 +280,16 @@ sync_with_remote_rebase() {
 }
 
 # VERSION helpers
+update_self_version_constant() {
+  local new_version="$1"
+  local self_path
+  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+  if grep -qE '^VERSION="[^"]+"' "$self_path"; then
+    sed -i '' -E "s/^VERSION=\"[^\"]+\"/VERSION=\"${new_version}\"/" "$self_path"
+  fi
+}
+
 read_semver() {
   local v="$1"
   [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
@@ -383,6 +393,7 @@ if [[ -n "$RELEASE_BUMP" ]]; then
 
   new_version="$(bump_semver "$RELEASE_BUMP" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
   new_tag="v${new_version}"
+  update_self_version_constant "$new_version"
 
   msg "🏷️ Release bump: $RELEASE_BUMP"
   msg "🔎 Current VERSION: $current_version"
