@@ -1,231 +1,535 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 QUIET=0
 GENERATE_TREE=0
-BUMP_TYPE=""
+
+# Existing flags
+BUMP_TYPE=""          # existing: tag bump based on latest git tag
 PREVIEW_MODE=false
 VERIFY_MODE=false
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  --help | -h)
-    cat <<EOF
-Usage: commit_gh [--quiet] [--tree true|false] [--bump patch|minor|major]
+# New flags
+INIT_REPO=false
+INIT_REMOTE=false
+REMOTE_VISIBILITY="private"   # private|public
+RELEASE_BUMP=""               # patch|minor|major (VERSION-file based release)
+VERSION_FILE="VERSION"        # default, override with --version-file
+BRANCH=""                     # default detected or "main"
+COMMIT_MESSAGE_OVERRIDE=""    # optional improvement
+DRY_RUN=false                 # optional improvement, safe to keep off by default
 
-Automates common Git commit and push operations with smart handling:
+msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
+always_msg() { echo "$*"; }
+die() { echo "❌ $*" >&2; exit 1; }
 
-  • Detects and handles rebase/merge conflicts
-  • Stashes local changes before rebasing
-  • Adds/commits/pushes only when needed
-  • Auto-generates commit messages with timestamp
-  • Integrates with Dependabot if enabled
-  • Regenerates FOLDER_TREE.md if folder_tree is installed
+usage() {
+  cat <<EOF
+Usage: commit_gh [options]
 
-Options:
-  --quiet, -q       Suppress most output (still shows important errors)
-  --tree [true]     Generate folder tree (default: false). If omitted, defaults to true.
-  --bump [type]        Create new git tag. Use: patch (default), minor, major  
-  --help, -h        Show this help and exit
+Core behavior (unchanged):
+  - Adds/commits/pushes when needed
+  - Stashes local changes before pull --rebase
+  - Detects rebase/merge in progress and exits safely
+  - Optional folder tree regeneration
+  - Optional tag bump from latest git tag (--bump)
+
+New capabilities:
+  --init-repo                 Initialize a git repo in the current directory if missing
+  --init-remote               Create 'origin' via GitHub CLI (gh) if missing
+  --public                    When creating remote, make it public (default: private)
+  --release patch|minor|major Bump VERSION file, commit, tag, push, create GitHub release
+  --version-file <path>       Version file to use for --release (default: VERSION)
+  --branch <name>             Branch to use (default: detected current branch, else main)
+  --message "<msg>"           Override commit message (otherwise timestamp-based)
+  --dry-run                   Show what would happen without making changes
+
+Existing options:
+  --quiet, -q                 Suppress most output
+  --tree [true|false]         Generate folder tree if folder_tree exists
+  --bump patch|minor|major    Create new git tag based on latest git tag
+  --preview                   Preview next tag for --bump without creating it
+  --verify                    Run verification checks (working tree clean, etc.)
+  --help, -h                  Show this help and exit
+  --version                   Show script version
 
 Examples:
-  ./commit_gh.sh
-  ./commit_gh.sh --quiet
-  ./commit_gh.sh --tree         # implicit true
-  ./commit_gh.sh --tree true
-  ./commit_gh.sh --tree false
+  commit_gh --init-repo --init-remote
+  commit_gh --release patch
+  commit_gh --release minor --init-remote --public
+  commit_gh --message "chore: sync changes" --tree true
 EOF
-    exit 0
-    ;;
-  --version)
-    echo "commit_gh version $VERSION"
-    exit 0
-    ;;
-  --quiet | -q)
-    QUIET=1
-    ;;
-  --bump)
-    case "${2:-patch}" in
-    patch | minor | major)
-      BUMP_TYPE="$2"
-      shift
+}
+
+# ----------------------------
+# Argument parsing
+# ----------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --version) echo "commit_gh version $VERSION"; exit 0 ;;
+    --quiet|-q) QUIET=1 ;;
+    --dry-run) DRY_RUN=true ;;
+    --init-repo) INIT_REPO=true ;;
+    --init-remote) INIT_REMOTE=true ;;
+    --public) REMOTE_VISIBILITY="public" ;;
+    --branch)
+      [[ -n "${2:-}" ]] || die "--branch requires a value"
+      BRANCH="$2"; shift
+      ;;
+    --version-file)
+      [[ -n "${2:-}" ]] || die "--version-file requires a value"
+      VERSION_FILE="$2"; shift
+      ;;
+    --message)
+      [[ -n "${2:-}" ]] || die "--message requires a value"
+      COMMIT_MESSAGE_OVERRIDE="$2"; shift
+      ;;
+    --release)
+      case "${2:-}" in
+        patch|minor|major) RELEASE_BUMP="$2"; shift ;;
+        *) die "Invalid value for --release. Use: patch | minor | major" ;;
+      esac
+      ;;
+    --bump)
+      case "${2:-patch}" in
+        patch|minor|major) BUMP_TYPE="$2"; shift ;;
+        *) die "Invalid value for --bump. Use: patch | minor | major" ;;
+      esac
+      ;;
+    --preview) PREVIEW_MODE=true ;;
+    --verify) VERIFY_MODE=true ;;
+    --tree)
+      if [[ "${2:-}" =~ ^(true|false)$ ]]; then
+        [[ "$2" == "true" ]] && GENERATE_TREE=1
+        shift
+      else
+        GENERATE_TREE=1
+      fi
       ;;
     *)
-      echo "❌ Invalid value for --bump. Use: patch | minor | major"
-      exit 1
+      die "Unknown option: $1"
       ;;
-    esac
-    ;;
-  --preview)
-    PREVIEW_MODE=true
-    ;;
-  --verify)
-    VERIFY_MODE=true
-    ;;
-  --tree)
-    # If the next argument is not another flag and exists, check its value
-    if [[ "${2:-}" =~ ^(true|false)$ ]]; then
-      [[ "$2" == "true" ]] && GENERATE_TREE=1
-      shift
-    else
-      # No value given → default to true
-      GENERATE_TREE=1
-    fi
-    ;;
   esac
   shift
 done
 
-msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
-always_msg() { echo "$*"; }
+# ----------------------------
+# Helpers
+# ----------------------------
+in_git_repo() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
 
-cd "$(git rev-parse --show-toplevel)" || exit 1
+ensure_repo() {
+  if in_git_repo; then
+    cd "$(git rev-parse --show-toplevel)" || exit 1
+    return 0
+  fi
 
-# --- Detect in-progress rebase or merge and exit if found ---
-if [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
-  echo -e "❌ \033[1;31mGit rebase is in progress.\033[0m"
-  echo "   Please resolve conflicts and run 'git rebase --continue' before using this script."
-  exit 1
-fi
+  if [[ "$INIT_REPO" != true ]]; then
+    die "Not inside a git repository. Re-run with --init-repo to initialize one."
+  fi
 
-if [ -f ".git/MERGE_HEAD" ]; then
-  echo -e "❌ \033[1;31mGit merge is in progress.\033[0m"
-  echo "   Please resolve conflicts and run 'git merge --continue' (or abort) before using this script."
-  exit 1
-fi
+  msg "🧰 Initializing git repository in: $(pwd)"
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git init"
+    msg "DRY RUN: git checkout -b main (if needed)"
+    return 0
+  fi
 
-DD=$(date +'%d')
-MM=$(date +'%m')
-YYYY=$(date +'%Y')
-COMMIT_MESSAGE="$DD/$MM/$YYYY - Updated configuration and fixed bugs"
+  git init >/dev/null
+  # Prefer main
+  if git show-ref --verify --quiet refs/heads/main; then
+    git checkout main >/dev/null
+  else
+    git checkout -b main >/dev/null
+  fi
+}
 
-# Ensure ssh-agent is running
-if [ -z "${SSH_AUTH_SOCK:-}" ]; then
-  eval "$(ssh-agent -s)" >/dev/null
-  ssh-add -A >/dev/null 2>&1 || true
-fi
+detect_branch() {
+  if [[ -n "$BRANCH" ]]; then
+    echo "$BRANCH"
+    return 0
+  fi
 
-# Remove tracked FOLDER_TREE.md if ignored
-if git ls-files --error-unmatch FOLDER_TREE.md &>/dev/null; then
-  if grep -qF "FOLDER_TREE.md" .gitignore; then
+  if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git rev-parse --abbrev-ref HEAD
+  else
+    echo "main"
+  fi
+}
+
+has_origin_remote() {
+  git remote | grep -q '^origin$'
+}
+
+ensure_origin_remote() {
+  if has_origin_remote; then
+    return 0
+  fi
+
+  if [[ "$INIT_REMOTE" != true ]]; then
+    msg "⚠️ No 'origin' remote configured. Push and GitHub release creation will be skipped."
+    return 1
+  fi
+
+  command -v gh >/dev/null 2>&1 || die "GitHub CLI 'gh' is required for --init-remote."
+
+  local repo_root repo_name visibility_flag
+  repo_root="$(pwd)"
+  repo_name="${GIT_REPO_NAME:-$(basename "$repo_root")}"
+
+  if [[ "$REMOTE_VISIBILITY" == "public" ]]; then
+    visibility_flag="--public"
+  else
+    visibility_flag="--private"
+  fi
+
+  msg "🐙 Creating GitHub repo '$repo_name' via gh and setting origin..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: gh repo create \"$repo_name\" --source \"$repo_root\" $visibility_flag --push"
+    return 0
+  fi
+
+  gh repo create "$repo_name" --source "$repo_root" $visibility_flag --push
+  msg "✅ Remote created and initial push done."
+}
+
+ensure_no_rebase_or_merge() {
+  if [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
+    die "Git rebase is in progress. Resolve and run 'git rebase --continue' first."
+  fi
+  if [ -f ".git/MERGE_HEAD" ]; then
+    die "Git merge is in progress. Resolve and complete the merge first."
+  fi
+}
+
+ensure_ssh_agent() {
+  if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+    eval "$(ssh-agent -s)" >/dev/null
+    ssh-add -A >/dev/null 2>&1 || true
+  fi
+}
+
+sync_with_remote_rebase() {
+  local branch="$1"
+
+  if ! has_origin_remote; then
+    return 0
+  fi
+
+  # Stash unstaged changes, rebase, pop
+  if ! git diff --quiet; then
+    msg "💾 Stashing unstaged local changes before pull --rebase..."
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: git stash -u"
+      msg "DRY RUN: git pull --rebase origin \"$branch\""
+      msg "DRY RUN: git stash pop"
+      return 0
+    fi
+
+    git stash -u >/dev/null
+    if ! git pull --rebase origin "$branch" >/dev/null 2>&1; then
+      die "Pull/rebase failed. Resolve manually."
+    fi
+    git stash pop >/dev/null 2>&1 || true
+  else
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: git pull --rebase origin \"$branch\""
+      return 0
+    fi
+    git pull --rebase origin "$branch" >/dev/null 2>&1 || true
+  fi
+}
+
+# VERSION helpers
+read_semver() {
+  local v="$1"
+  [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  SEMVER_MAJOR="${BASH_REMATCH[1]}"
+  SEMVER_MINOR="${BASH_REMATCH[2]}"
+  SEMVER_PATCH="${BASH_REMATCH[3]}"
+  return 0
+}
+
+bump_semver() {
+  local bump="$1"
+  local major="$2" minor="$3" patch="$4"
+
+  case "$bump" in
+    patch) patch=$((patch + 1)) ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    *) die "Unknown bump type: $bump" ;;
+  esac
+
+  echo "${major}.${minor}.${patch}"
+}
+
+ensure_version_file() {
+  local vf="$1"
+  if [[ ! -f "$vf" ]]; then
+    msg "⚠️ Version file '$vf' not found. Creating with 0.0.0"
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: echo 0.0.0 > \"$vf\""
+      return 0
+    fi
+    echo "0.0.0" > "$vf"
+  fi
+}
+
+create_github_release() {
+  local tag="$1"
+  command -v gh >/dev/null 2>&1 || { msg "⚠️ gh not found. Skipping GitHub release."; return 0; }
+  has_origin_remote || { msg "⚠️ No origin remote. Skipping GitHub release."; return 0; }
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: gh release view \"$tag\" (check exists)"
+    msg "DRY RUN: gh release create \"$tag\" --title \"$tag\" --notes \"Release $tag\""
+    return 0
+  fi
+
+  if gh release view "$tag" >/dev/null 2>&1; then
+    msg "⚠️ GitHub release $tag already exists. Skipping."
+    return 0
+  fi
+
+  msg "📦 Creating GitHub release $tag..."
+  gh release create "$tag" --title "$tag" --notes "Release $tag"
+}
+
+# ----------------------------
+# Start
+# ----------------------------
+ensure_repo
+ensure_no_rebase_or_merge
+ensure_ssh_agent
+
+branch="$(detect_branch)"
+
+# Optional: remove tracked FOLDER_TREE.md if ignored (kept from your original)
+if in_git_repo && git ls-files --error-unmatch FOLDER_TREE.md &>/dev/null; then
+  if [[ -f .gitignore ]] && grep -qF "FOLDER_TREE.md" .gitignore; then
     msg "🧹 Removing FOLDER_TREE.md from Git tracking..."
-    git rm --cached FOLDER_TREE.md >/dev/null
+    [[ "$DRY_RUN" == true ]] && msg "DRY RUN: git rm --cached FOLDER_TREE.md" || git rm --cached FOLDER_TREE.md >/dev/null
   fi
 fi
 
-git add . >/dev/null
+# If user wants remote creation, try it early
+ensure_origin_remote || true
 
-# --- Commit staged changes if any ---
+# Decide commit message
+if [[ -n "$COMMIT_MESSAGE_OVERRIDE" ]]; then
+  COMMIT_MESSAGE="$COMMIT_MESSAGE_OVERRIDE"
+else
+  DD=$(date +'%d')
+  MM=$(date +'%m')
+  YYYY=$(date +'%Y')
+  COMMIT_MESSAGE="$DD/$MM/$YYYY - Updated configuration and fixed bugs"
+fi
+
+# ----------------------------
+# RELEASE FLOW (VERSION-file based)
+# ----------------------------
+if [[ -n "$RELEASE_BUMP" ]]; then
+  vf_path="$VERSION_FILE"
+
+  # If user passed a bare filename, treat it as repo-root relative
+  if [[ "$vf_path" != /* ]]; then
+    vf_path="$(pwd)/$vf_path"
+  fi
+
+  ensure_version_file "$vf_path"
+
+  current_version="$(<"$vf_path")"
+  read_semver "$current_version" || die "Invalid VERSION '$current_version'. Expected X.Y.Z"
+
+  new_version="$(bump_semver "$RELEASE_BUMP" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
+  new_tag="v${new_version}"
+
+  msg "🏷️ Release bump: $RELEASE_BUMP"
+  msg "🔎 Current VERSION: $current_version"
+  msg "🎯 New VERSION:     $new_version"
+  msg "🎯 Tag:             $new_tag"
+
+  # Make sure we are up to date before creating the release commit/tag
+  sync_with_remote_rebase "$branch"
+
+  # Update VERSION file
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: echo \"$new_version\" > \"$vf_path\""
+  else
+    echo "$new_version" > "$vf_path"
+  fi
+
+  # Stage and commit
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git add \"$vf_path\""
+    msg "DRY RUN: git add . (rest of changes)"
+  else
+    git add "$vf_path" >/dev/null
+    git add . >/dev/null
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git commit -m \"Release $new_tag\""
+  else
+    if git diff --cached --quiet; then
+      msg "⚠️ No staged changes to commit. Release flow will still tag if tag does not exist."
+    else
+      git commit -m "Release $new_tag" >/dev/null
+    fi
+  fi
+
+  # Tag
+  if git rev-parse "$new_tag" >/dev/null 2>&1; then
+    die "Tag $new_tag already exists. Aborting to avoid overwriting."
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git tag -a \"$new_tag\" -m \"Release $new_tag\""
+  else
+    git tag -a "$new_tag" -m "Release $new_tag" >/dev/null
+  fi
+
+  # Push branch and tag
+  if has_origin_remote; then
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: git push origin \"$branch\""
+      msg "DRY RUN: git push origin \"$new_tag\""
+    else
+      git push origin "$branch" >/dev/null 2>&1 || die "Push branch failed."
+      git push origin "$new_tag" >/dev/null 2>&1 || die "Push tag failed."
+      msg "🚀 Pushed $branch and $new_tag to origin."
+    fi
+  else
+    msg "⚠️ No origin remote. Skipping push and GitHub release."
+  fi
+
+  # Create GitHub Release
+  create_github_release "$new_tag"
+
+  msg "✅ Release complete: $new_tag"
+fi
+
+# ----------------------------
+# ORIGINAL COMMIT FLOW (kept)
+# Runs even after release unless you prefer to exit after release.
+# If you want release to be exclusive, uncomment the exit below.
+# ----------------------------
+if [[ -n "$RELEASE_BUMP" ]]; then
+  # exit 0
+  :
+fi
+
+# Stage everything (existing behavior)
+[[ "$DRY_RUN" == true ]] && msg "DRY RUN: git add ." || git add . >/dev/null
+
 DID_COMMIT=0
 if ! git diff --cached --quiet; then
-  msg "📦 Committing staged changes before pull/rebase..."
-  git commit -m "$COMMIT_MESSAGE" >/dev/null
+  msg "📦 Committing staged changes..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git commit -m \"$COMMIT_MESSAGE\""
+  else
+    git commit -m "$COMMIT_MESSAGE" >/dev/null
+  fi
   DID_COMMIT=1
 fi
 
-# --- Stash unstaged changes if any, then rebase ---
-if ! git diff --quiet; then
-  msg "💾 Stashing unstaged local changes before rebase..."
-  git stash -u >/dev/null
-  if ! git pull --rebase origin main >/dev/null 2>&1; then
-    echo "❌ Pull/rebase failed! Please resolve manually."
-    exit 1
-  fi
-  git stash pop >/dev/null 2>&1 || true
-else
-  git pull --rebase origin main >/dev/null 2>&1
-fi
+# Rebase sync, then commit any new staged changes
+sync_with_remote_rebase "$branch"
 
-git add . >/dev/null
+[[ "$DRY_RUN" == true ]] && msg "DRY RUN: git add ." || git add . >/dev/null
 if ! git diff --cached --quiet; then
   msg "📦 Committing new staged changes..."
-  git commit -m "$COMMIT_MESSAGE" >/dev/null
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git commit -m \"$COMMIT_MESSAGE\""
+  else
+    git commit -m "$COMMIT_MESSAGE" >/dev/null
+  fi
   DID_COMMIT=1
 fi
 
-# --- Smart Push Logic ---
+# Smart push logic (kept, generalized to branch)
 DID_PUSH=0
 try_push() {
   local max_attempts=2
   local attempt=1
+
+  if ! has_origin_remote; then
+    msg "⚠️ No origin remote. Skipping push."
+    return 0
+  fi
+
   while [[ $attempt -le $max_attempts ]]; do
-    # Only push if there are commits ahead
-    if [[ $(git log origin/main..HEAD --oneline | wc -l) -gt 0 ]]; then
-      if git push origin main >/dev/null 2>&1; then
+    # Only push if ahead of origin/branch
+    if [[ $(git log "origin/$branch..HEAD" --oneline 2>/dev/null | wc -l | tr -d ' ') -gt 0 ]]; then
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "DRY RUN: git push origin \"$branch\""
         DID_PUSH=1
-        msg "🚀 Successfully pushed to origin/main."
+        return 0
+      fi
+
+      if git push origin "$branch" >/dev/null 2>&1; then
+        DID_PUSH=1
+        msg "🚀 Successfully pushed to origin/$branch."
         return 0
       else
-        msg "⚠️  Push failed (maybe due to remote updates). Trying pull --rebase and re-push..."
-        if ! git pull --rebase origin main >/dev/null 2>&1; then
-          echo "❌ Pull/rebase failed! Please resolve manually."
-          exit 1
+        msg "⚠️ Push failed. Trying pull --rebase and re-push..."
+        if ! git pull --rebase origin "$branch" >/dev/null 2>&1; then
+          die "Pull/rebase failed. Resolve manually."
         fi
         ((attempt++))
       fi
     else
-      # Nothing to push
       return 0
     fi
   done
-  echo "❌ Push failed after rebase. Please resolve conflicts manually."
-  exit 1
+
+  die "Push failed after retry. Resolve manually."
 }
 try_push
 
-# --- Verification Layer (can run before tagging) ---
+# Verification layer (kept)
 if [[ "$VERIFY_MODE" == true ]]; then
   msg "🧪 Running commit_gh verification..."
 
-  # 1. Clean working tree
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    msg "❌ Working tree is dirty."
-    exit 1
-  else
-    msg "✅ Working tree is clean."
+    die "Working tree is dirty."
   fi
+  msg "✅ Working tree is clean."
 
-  # 2. On main branch
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
-  if [[ "$current_branch" != "main" ]]; then
-    msg "❌ Not on 'main' branch (current: $current_branch)"
-    exit 1
-  else
-    msg "✅ On branch: main"
+  if [[ "$current_branch" != "$branch" ]]; then
+    die "Not on '$branch' branch (current: $current_branch)"
   fi
+  msg "✅ On branch: $branch"
 
-  # 3. .version file check and (optional) creation
+  # Keep your existing .version logic as-is
   if [[ ! -f .version ]]; then
     latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
-    echo "$latest_tag" >.version
+    [[ "$DRY_RUN" == true ]] && msg "DRY RUN: echo \"$latest_tag\" > .version" || echo "$latest_tag" > .version
     version_file="$latest_tag"
-    msg "🆕 .version file not found — created with: $latest_tag"
+    msg "🆕 .version file created with: $latest_tag"
   else
     version_file=$(<.version)
     msg "✅ .version file found: $version_file"
   fi
 
-  # 4. Match latest tag
   latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
-  if [[ "$version_file" == "$latest_tag" ]]; then
-    msg "✅ .version matches latest tag: $latest_tag"
-  else
-    msg "❌ .version ($version_file) does not match latest tag ($latest_tag)"
-    exit 1
+  if [[ "$version_file" != "$latest_tag" ]]; then
+    die ".version ($version_file) does not match latest tag ($latest_tag)"
   fi
-
   msg "🎯 All verification checks passed."
-  # Don't exit here — continue to bump/tag if requested
 fi
 
-# --- Output up-to-date message if nothing to commit or push ---
 if [[ $DID_COMMIT -eq 0 && $DID_PUSH -eq 0 ]]; then
-  branch=$(git rev-parse --abbrev-ref HEAD)
-  always_msg "✅ Current branch $branch is up to date."
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  always_msg "✅ Current branch $current_branch is up to date."
   always_msg "🟢 No changes to commit."
 fi
 
@@ -236,13 +540,13 @@ fi
 if [[ $GENERATE_TREE -eq 1 ]]; then
   if command -v folder_tree &>/dev/null; then
     msg "🌳 Generating updated folder tree..."
-    folder_tree --preset terraform,github --output markdown >/dev/null
+    [[ "$DRY_RUN" == true ]] && msg "DRY RUN: folder_tree --preset terraform,github --output markdown" || folder_tree --preset terraform,github --output markdown >/dev/null
   else
-    msg "⚠️  'folder_tree' command not found — skipping tree update."
+    msg "⚠️ 'folder_tree' command not found. Skipping tree update."
   fi
 fi
 
-# --- Semantic Version Tagging / Preview ---
+# Existing tag bump behavior (kept)
 if [[ -n "$BUMP_TYPE" || "$PREVIEW_MODE" == true ]]; then
   latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "v0.0.0")
   IFS='.' read -r major minor patch <<<"${latest_tag#v}"
@@ -250,26 +554,14 @@ if [[ -n "$BUMP_TYPE" || "$PREVIEW_MODE" == true ]]; then
   msg "🔍 Latest tag: $latest_tag"
 
   if [[ -z "$BUMP_TYPE" ]]; then
-    if [[ "$PREVIEW_MODE" == true ]]; then
-      msg "🕵️ No bump type specified — nothing to preview."
-      exit 0
-    fi
-    return 0
+    msg "🕵️ No bump type specified."
+    exit 0
   fi
 
   case "$BUMP_TYPE" in
-  patch)
-    ((patch++))
-    ;;
-  minor)
-    ((minor++))
-    patch=0
-    ;;
-  major)
-    ((major++))
-    minor=0
-    patch=0
-    ;;
+    patch) ((patch++)) ;;
+    minor) ((minor++)); patch=0 ;;
+    major) ((major++)); minor=0; patch=0 ;;
   esac
 
   new_tag="v$major.$minor.$patch"
@@ -280,19 +572,24 @@ if [[ -n "$BUMP_TYPE" || "$PREVIEW_MODE" == true ]]; then
     exit 0
   fi
 
-  if [[ $DID_COMMIT -eq 0 && $DID_PUSH -eq 0 ]]; then
-    msg "ℹ️ No commits or pushes, but tagging anyway due to --bump $BUMP_TYPE"
-  fi
-
   if git rev-parse "$new_tag" >/dev/null 2>&1; then
-    msg "⚠️ Tag $new_tag already exists. Aborting to avoid accidental overwrite."
-    exit 1
+    die "Tag $new_tag already exists. Aborting."
   fi
 
   msg "🏷️ Creating new tag: $new_tag"
-  git tag -a "$new_tag" -m "Release $new_tag" >/dev/null
-  git push origin "$new_tag" >/dev/null
-  msg "✅ Pushed tag $new_tag successfully."
-  echo "$new_tag" >.version
-  msg "📝 Wrote version to .version"
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: git tag -a \"$new_tag\" -m \"Release $new_tag\""
+    msg "DRY RUN: git push origin \"$new_tag\""
+    msg "DRY RUN: echo \"$new_tag\" > .version"
+  else
+    git tag -a "$new_tag" -m "Release $new_tag" >/dev/null
+    if has_origin_remote; then
+      git push origin "$new_tag" >/dev/null
+      msg "✅ Pushed tag $new_tag successfully."
+    else
+      msg "⚠️ No origin remote. Tag exists only locally."
+    fi
+    echo "$new_tag" > .version
+    msg "📝 Wrote version to .version"
+  fi
 fi
