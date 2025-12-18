@@ -85,35 +85,48 @@ fi
 # === Create GitHub release (optional) ===
 if [[ "$PUBLISH_RELEASE" == true ]]; then
   echo "📣 Publishing GitHub release..."
-  gh release create "v$VERSION" --title "$FORMULA_BASENAME $VERSION" --notes "Release $VERSION" || echo "ℹ️ Tag v$VERSION already exists, skipping creation."
+  if gh release view "v$VERSION" >/dev/null 2>&1; then
+    echo "ℹ️ Release v$VERSION already exists, skipping creation."
+  else
+    gh release create "v$VERSION" --title "$FORMULA_BASENAME $VERSION" --notes "Release $VERSION"
+  fi
   echo "🌐 $REPO_URL/releases/tag/v$VERSION"
 fi
 
+# === Reinstall via Homebrew (optional) ===
 # === Reinstall via Homebrew (optional) ===
 if [[ "$SKIP_REINSTALL" == true ]]; then
   echo "⏭️  Skipping reinstall as requested via --skip-reinstall."
 else
   echo "🍺 Reinstalling via Homebrew..."
+
+  # Tap naming rule:
+  # repo:  homebrew-commit-gh-cli
+  # tap:   raymonepping/commit-gh-cli
+  TAP_OWNER="${HOMEBREW_TAP_OWNER:-raymonepping}"
+  TAP_NAME="${HOMEBREW_TAP_NAME:-$FORMULA_BASENAME}"
+  TAP="${TAP_OWNER}/${TAP_NAME}"
+  FORMULA_REF="${TAP}/${FORMULA_BASENAME}"
+
+  echo "🔌 Ensuring tap exists: $TAP"
+  brew tap "$TAP" >/dev/null 2>&1 || true
+  brew update >/dev/null 2>&1 || true
+
   if brew list "$FORMULA_BASENAME" >/dev/null 2>&1; then
     brew uninstall --force "$FORMULA_BASENAME" || true
   fi
-  brew install --formula --build-from-source "$FORMULA_FILE"
+
+  echo "📦 Installing from tap: $FORMULA_REF"
+  brew install --build-from-source "$FORMULA_REF"
 
   echo "🔗 Relinking..."
   brew link --overwrite --force "$FORMULA_BASENAME" || true
 
   echo "✅ Verifying installed version..."
-  BINARY_PATH="$(brew --prefix "$FORMULA_BASENAME" 2>/dev/null)/bin/${FORMULA_BASENAME//-/_}"
-  if [[ -x "$BINARY_PATH" ]]; then
-    "$BINARY_PATH" --version
+  if command -v commit_gh >/dev/null 2>&1; then
+    commit_gh --version
   else
-    # Fallback: try just the formula basename as a command
-    if command -v "${FORMULA_BASENAME//-/_}" &>/dev/null; then
-      "${FORMULA_BASENAME//-/_}" --version
-    else
-      echo "⚠️  CLI binary not found in PATH. You may need to run:"
-      echo "  brew link --overwrite --force $FORMULA_BASENAME"
-    fi
+    echo "⚠️  commit_gh not found in PATH after install."
   fi
 fi
 
