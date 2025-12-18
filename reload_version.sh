@@ -141,8 +141,14 @@ else
   echo "📦 Installing from tap: $FORMULA_REF"
   brew install --build-from-source "$FORMULA_REF"
 
-  echo "🔗 Relinking..."
-  brew link --overwrite --force "$FORMULA_BASENAME" || true
+  echo "🔗 Linking..."
+  if brew link "$FORMULA_BASENAME" >/dev/null 2>&1; then
+    echo "✅ Linked."
+  else
+    brew unlink "$FORMULA_BASENAME" >/dev/null 2>&1 || true
+    brew link --overwrite --force "$FORMULA_BASENAME" >/dev/null 2>&1 || true
+    echo "✅ Re-linked."
+  fi
 
   echo "✅ Verifying installed version..."
   if command -v commit_gh >/dev/null 2>&1; then
