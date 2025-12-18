@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.7.0"
+VERSION="1.8.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -290,6 +290,15 @@ update_self_version_constant() {
   fi
 }
 
+get_self_version_constant() {
+  local self_path
+  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+  grep -E '^VERSION="[^"]+"' "$self_path" \
+    | head -n1 \
+    | sed -E 's/^VERSION="([^"]+)".*/\1/'
+}
+
 read_semver() {
   local v="$1"
   [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
@@ -394,6 +403,13 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   new_version="$(bump_semver "$RELEASE_BUMP" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
   new_tag="v${new_version}"
   update_self_version_constant "$new_version"
+
+  # Guard: ensure script VERSION matches the release version before tagging
+  self_version="$(get_self_version_constant)"
+  if [[ "$self_version" != "$new_version" ]]; then
+    die "Refusing to tag: bin/commit_gh VERSION is $self_version but release version is $new_version"
+  fi
+
 
   msg "🏷️ Release bump: $RELEASE_BUMP"
   msg "🔎 Current VERSION: $current_version"

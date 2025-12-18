@@ -15,6 +15,16 @@ for arg in "$@"; do
   esac
 done
 
+# Optional positional version override, example:
+# ./reload_version.sh --publish-gh-release 1.6.1
+VERSION_OVERRIDE=""
+for arg in "$@"; do
+  if [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    VERSION_OVERRIDE="$arg"
+    break
+  fi
+done
+
 # === Detect project root ===
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -29,10 +39,22 @@ fi
 FORMULA_BASENAME="$(basename "$FORMULA_FILE" .rb)"
 
 # === Find the version to use (latest git tag, drop leading 'v') ===
-VERSION="$(git -C "$PROJECT_ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
-if [[ -z "$VERSION" ]]; then
-  echo "❌ No git tags found. Please tag your release before running this script."
+if [[ -n "$VERSION_OVERRIDE" ]]; then
+  VERSION="$VERSION_OVERRIDE"
+else
+  VERSION="$(git -C "$PROJECT_ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+fi
+
+if [[ -z "${VERSION:-}" ]]; then
+  echo "❌ No git tags found and no version override provided."
   exit 1
+fi
+
+if [[ -n "$VERSION_OVERRIDE" ]]; then
+  if ! git -C "$PROJECT_ROOT" rev-parse "v$VERSION" >/dev/null 2>&1; then
+    echo "❌ Tag v$VERSION does not exist in this repo."
+    exit 1
+  fi
 fi
 
 REPO_URL="https://github.com/${GITHUB_REPOSITORY:-raymonepping/homebrew-$FORMULA_BASENAME}"
