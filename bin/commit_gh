@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.5.0"
+VERSION="2.5.1"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -2457,6 +2457,26 @@ fi
 
 if [[ "$_ran_standalone" == true ]]; then
   exit "$_audit_exit"
+fi
+
+# Catch release-only modifiers used without --release
+if [[ "$RELEASE_GENERATE_NOTES" == true && -z "$RELEASE_BUMP" ]]; then
+  always_msg "⚠️  --generate-notes is a modifier for --release and has no effect on its own."
+  always_msg "   To release with auto-generated notes: ${CYAN}commit_gh --release patch --generate-notes${RESET}"
+  always_msg "   To preview the CHANGELOG entry first: ${CYAN}commit_gh --changelog${RESET}"
+  exit 1
+fi
+
+if [[ "$RELEASE_NO_RELEASE" == true && -z "$RELEASE_BUMP" ]]; then
+  always_msg "⚠️  --no-release is a modifier for --release and has no effect on its own."
+  always_msg "   Usage: ${CYAN}commit_gh --release patch --no-release${RESET}"
+  exit 1
+fi
+
+if [[ "$RELEASE_FORCE" == true && -z "$RELEASE_BUMP" ]]; then
+  always_msg "⚠️  --force is a modifier for --release and has no effect on its own."
+  always_msg "   Usage: ${CYAN}commit_gh --release patch --force${RESET}"
+  exit 1
 fi
 
 # ----------------------------
