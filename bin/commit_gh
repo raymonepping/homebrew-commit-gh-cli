@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.17"
+VERSION="2.0.18"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -252,6 +252,8 @@ write_gitignore() {
 *.env
 !.env.example
 !.env.sample
+.vault.*
+*.vault
 *.pem
 *.key
 *.p12
@@ -292,6 +294,8 @@ EOF
 *.env
 !.env.example
 !.env.sample
+.vault.*
+*.vault
 *.pem
 *.key
 *.p12
@@ -427,7 +431,7 @@ install_pre_commit_hook() {
   cat >.git/hooks/pre-commit <<'EOF'
 #!/usr/bin/env bash
 # Block sensitive filenames from being staged
-BLOCKED_PATTERN='\.(env|pem|key|p12|pfx|cer|crt|der)$|^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$|_(rsa|dsa|ecdsa|ed25519)$'
+BLOCKED_PATTERN='\.(env|pem|key|p12|pfx|cer|crt|der|vault)$|^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$|_(rsa|dsa|ecdsa|ed25519)$|^\.vault\.'
 STAGED_FILES=$(git diff --cached --name-only 2>/dev/null)
 BLOCKED=$(echo "$STAGED_FILES" | grep -E "$BLOCKED_PATTERN" | grep -v '\.env\.example$' | grep -v '\.env\.sample$' || true)
 if [[ -n "$BLOCKED" ]]; then
