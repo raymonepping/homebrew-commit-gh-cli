@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.16"
+VERSION="2.0.17"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -229,16 +229,22 @@ gitleaks_available() { command -v gitleaks >/dev/null 2>&1; }
 write_gitignore() {
   local gi_path=".gitignore"
   if [[ -f "$gi_path" ]]; then
-    if grep -qE '^\.env$|^\.env\b' "$gi_path" 2>/dev/null; then
+    local _has_env _has_star_env
+    grep -qE '^\.env$|^\.env\b' "$gi_path" 2>/dev/null && _has_env=true || _has_env=false
+    grep -qE '^\*\.env$' "$gi_path" 2>/dev/null && _has_star_env=true || _has_star_env=false
+
+    if [[ "$_has_env" == true && "$_has_star_env" == true ]]; then
       msg "✅ .gitignore already exists. Skipping."
       return 0
     fi
-    msg "⚠️ .gitignore exists but missing .env coverage — appending secrets block..."
-    if [[ "$DRY_RUN" == true ]]; then
-      msg "DRY RUN: append secrets block to .gitignore"
-      return 0
-    fi
-    cat >>"$gi_path" <<'EOF'
+
+    if [[ "$_has_env" == false ]]; then
+      msg "⚠️ .gitignore exists but missing .env coverage — appending secrets block..."
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "DRY RUN: append secrets block to .gitignore"
+        return 0
+      fi
+      cat >>"$gi_path" <<'EOF'
 
 # ── Secrets & credentials (added by commit_gh --harden) ────────
 .env
@@ -262,7 +268,16 @@ id_ed25519
 *_ecdsa
 *_ed25519
 EOF
-    msg "✅ Secrets block appended to .gitignore."
+      msg "✅ Secrets block appended to .gitignore."
+    else
+      msg "⚠️ .gitignore missing *.env pattern — appending..."
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "DRY RUN: append *.env to .gitignore"
+        return 0
+      fi
+      printf '\n*.env\n' >>"$gi_path"
+      msg "✅ *.env appended to .gitignore."
+    fi
     return 0
   fi
   msg "📄 Writing .gitignore..."
