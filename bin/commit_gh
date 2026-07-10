@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.15"
+VERSION="2.0.16"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -243,6 +243,7 @@ write_gitignore() {
 # ── Secrets & credentials (added by commit_gh --harden) ────────
 .env
 .env.*
+*.env
 !.env.example
 !.env.sample
 *.pem
@@ -273,6 +274,7 @@ EOF
 # ── Secrets & credentials ──────────────────────────────────────
 .env
 .env.*
+*.env
 !.env.example
 !.env.sample
 *.pem
@@ -1017,7 +1019,7 @@ run_audit() {
   fi
 
   # .gitignore with .env coverage
-  if [[ -f ".gitignore" ]] && grep -qE '^\.env$|^\.env\b' ".gitignore" 2>/dev/null; then
+  if [[ -f ".gitignore" ]] && grep -qE '^\.env$|^\.env\b|^\*\.env$' ".gitignore" 2>/dev/null; then
     always_msg "  ${GREEN}✅${RESET}  .gitignore                       present (.env covered)"
   elif [[ -f ".gitignore" ]]; then
     always_msg "  ${YELLOW}⚠️${RESET}   .gitignore                       present but .env not listed  ${DIM}→ commit_gh --harden${RESET}"
