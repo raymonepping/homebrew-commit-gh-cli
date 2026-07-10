@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.6.1"
+VERSION="2.6.3"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -2181,13 +2181,41 @@ create_pr() {
   base_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")"
 
   if [[ "$head_branch" == "$base_branch" ]]; then
-    die "Cannot create a PR from '${head_branch}' into itself. Use --branch <feature> to specify a feature branch or use --message to auto-derive one."
+    die "Cannot create a PR from '${head_branch}' into itself. Use --branch <feature> or --message to auto-derive a branch name."
+  fi
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  # Guard: GitHub rejects PRs when there are no commits between branches.
+  local _ahead=0
+  _ahead="$(git rev-list --count "${head_branch}" "^origin/${base_branch}" 2>/dev/null \
+           || git rev-list --count "${head_branch}" "^${base_branch}" 2>/dev/null \
+           || echo "0")"
+  if [[ "$_ahead" -eq 0 && "$DRY_RUN" != true ]]; then
+    always_msg ""
+    always_msg "${BOLD}🔀 commit_gh pull request${RESET}"
+    always_msg "$sep"
+    always_msg "  ${YELLOW}⚠️${RESET}  ${BOLD}${head_branch}${RESET} has no commits ahead of ${BOLD}${base_branch}${RESET}"
+    always_msg "  ${DIM}Make your changes, then re-run:${RESET}"
+    always_msg "  ${DIM}  commit_gh --pr --message \"your change\"${RESET}"
+    always_msg ""
+    always_msg "$sep"
+    always_msg ""
+    return 0
+  fi
+
+  # Ensure branch exists on remote — try_push skips when there's nothing new to push.
+  if [[ "$DRY_RUN" != true ]]; then
+    if ! git ls-remote --exit-code --heads origin "$head_branch" >/dev/null 2>&1; then
+      msg "🌱 Publishing branch ${CYAN}${head_branch}${RESET} to origin..."
+      git push -u origin "$head_branch" >/dev/null 2>&1 \
+        || die "Failed to push branch '$head_branch' to origin. Check permissions."
+    fi
   fi
 
   [[ -z "$pr_title" ]] && \
     pr_title="$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "PR from ${head_branch}")"
 
-  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   local draft_label=""
   [[ "$PR_DRAFT" == true ]] && draft_label="  ${DIM}(draft)${RESET}"
 
@@ -2201,20 +2229,25 @@ create_pr() {
   if [[ "$DRY_RUN" == true ]]; then
     local _draft_flag=""
     [[ "$PR_DRAFT" == true ]] && _draft_flag=" --draft"
-    msg "  DRY RUN: gh pr create --base \"$base_branch\" --head \"$head_branch\" --title \"$pr_title\" --fill${_draft_flag}"
+    msg "  DRY RUN: gh pr create --base \"$base_branch\" --head \"$head_branch\" --title \"$pr_title\" --body \"\"${_draft_flag}"
     always_msg "$sep"
     always_msg "  ${DIM}DRY RUN: no PR created${RESET}"
     always_msg ""
     return 0
   fi
 
-  local _pr_args=(--base "$base_branch" --head "$head_branch" --title "$pr_title" --fill)
+  local _pr_body=""
+  [[ -f ".github/pull_request_template.md" ]] && _pr_body="$(<.github/pull_request_template.md)"
+
+  local _pr_args=(--base "$base_branch" --head "$head_branch" --title "$pr_title" --body "$_pr_body")
   [[ "$PR_DRAFT" == true ]] && _pr_args+=(--draft)
 
-  local pr_url
-  if pr_url="$(gh pr create "${_pr_args[@]}" 2>/dev/null)"; then
+  local _gh_out _gh_exit=0
+  _gh_out="$(gh pr create "${_pr_args[@]}" 2>&1)" || _gh_exit=$?
+
+  if [[ $_gh_exit -eq 0 ]]; then
     always_msg "  ${GREEN}✅${RESET}  PR created${draft_label}"
-    always_msg "  ${DIM}${pr_url}${RESET}"
+    always_msg "  ${DIM}${_gh_out}${RESET}"
   else
     local existing
     existing="$(gh pr view --json url --jq '.url' 2>/dev/null || true)"
@@ -2222,7 +2255,8 @@ create_pr() {
       always_msg "  ${YELLOW}⚠️${RESET}  PR already exists"
       always_msg "  ${DIM}${existing}${RESET}"
     else
-      always_msg "  ${RED}❌${RESET}  PR creation failed  ${DIM}(is the branch pushed? run: gh auth status)${RESET}"
+      always_msg "  ${RED}❌${RESET}  PR creation failed"
+      [[ -n "$_gh_out" ]] && always_msg "  ${DIM}${_gh_out}${RESET}"
     fi
   fi
 
