@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.0"
+VERSION="2.0.1"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -240,7 +240,7 @@ install_pre_commit_hook() {
   cat >.git/hooks/pre-commit <<'EOF'
 #!/usr/bin/env bash
 if command -v gitleaks &>/dev/null; then
-  if ! gitleaks detect --staged --redact --exit-code 1 2>&1; then
+  if ! gitleaks protect --staged --redact 2>&1; then
     echo "❌ Gitleaks detected secrets in staged files. Commit blocked."
     echo "   Remove secrets from the files above, then re-stage and commit."
     exit 1
@@ -331,10 +331,10 @@ run_gitleaks_scan() {
   if [[ "$mode" == "staged" ]]; then
     msg "🔍 Gitleaks: scanning staged files..."
     if [[ "$DRY_RUN" == true ]]; then
-      msg "DRY RUN: gitleaks detect --staged --redact"
+      msg "DRY RUN: gitleaks protect --staged --redact"
       return 0
     fi
-    if ! gitleaks detect --staged --redact --exit-code 1 2>&1; then
+    if ! gitleaks protect --staged --redact 2>&1; then
       die "Gitleaks detected secrets in staged files. Commit blocked. Review output above."
     fi
     msg "✅ Gitleaks staged scan clean."
