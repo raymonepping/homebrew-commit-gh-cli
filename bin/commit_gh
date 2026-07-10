@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.14"
+VERSION="2.0.15"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -89,7 +89,8 @@ usage() {
     "${BOLD}${MAGENTA}New capabilities:${RESET}" \
     "  ${BOLD}--init-repo${RESET}                 Initialize a git repo in the current directory if missing" \
     "  ${BOLD}--init-remote${RESET}               Create 'origin' via GitHub CLI (gh) if missing" \
-    "  ${BOLD}--public${RESET}                    When creating remote, make it public (default: private)" \
+    "  ${BOLD}--public${RESET}                    When creating remote, make it public" \
+    "  ${BOLD}--private${RESET}                   When creating remote, make it private (default)" \
     "  ${BOLD}--release${RESET} ${YELLOW}patch|minor|major|x.y.z${RESET}  Bump VERSION, commit, tag, push, GitHub release" \
     "  ${BOLD}--force${RESET}                     Overwrite existing tag and GitHub release (use with --release)" \
     "  ${BOLD}--no-release${RESET}                Tag and push only; skip GitHub release creation" \
@@ -155,6 +156,7 @@ while [[ $# -gt 0 ]]; do
   --init-repo) INIT_REPO=true ;;
   --init-remote) INIT_REMOTE=true ;;
   --public) REMOTE_VISIBILITY="public" ;;
+  --private) REMOTE_VISIBILITY="private" ;;
   --audit) AUDIT_MODE=true ;;
   --harden) HARDEN_MODE=true ;;
   --scan) SCAN_MODE=true ;;
