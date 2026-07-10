@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.3.3"
+VERSION="2.4.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -70,6 +70,11 @@ READ_VERSION_ONLY=false     # --read-version-only: print version inventory and e
 PROTECT_MODE=false          # --protect: set branch protection rules on remote
 DOCTOR_MODE=false           # --doctor: check developer environment
 
+# v2.3 flags
+ROLLBACK_TAG=""             # --rollback [tag]: delete a release tag + GitHub release
+SIGN_MODE=false             # --sign: configure GPG/SSH commit signing
+LABELS_MODE=false           # --labels: create standard GitHub issue labels
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -136,6 +141,9 @@ usage() {
     "  ${BOLD}Utilities${RESET}" \
     "  ${BOLD}--protect${RESET}                Set branch protection on remote  ${DIM}(1 review required, no force-push)${RESET}" \
     "  ${BOLD}--doctor${RESET}                 Check developer environment  ${DIM}(bash, git, gitleaks, gh, SSH)${RESET}" \
+    "  ${BOLD}--rollback${RESET} ${YELLOW}[tag]${RESET}          Delete a GitHub release and its tag  ${DIM}(default: latest tag)${RESET}" \
+    "  ${BOLD}--sign${RESET}                   Enable GPG or SSH commit signing  ${DIM}(global config + CI workflow)${RESET}" \
+    "  ${BOLD}--labels${RESET}                 Create standard GitHub issue labels on remote  ${DIM}(idempotent)${RESET}" \
     "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}  Create a git tag from latest tag  ${DIM}(no file changes)${RESET}" \
     "  ${BOLD}--preview${RESET}                Preview next --bump tag without creating it" \
     "  ${BOLD}--verify${RESET}                 Run verification checks (clean tree, branch, version)" \
@@ -156,6 +164,9 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --read-version-only" \
     "  ${CYAN}commit_gh${RESET} --release minor --dry-run" \
+    "  ${CYAN}commit_gh${RESET} --rollback v2.3.0" \
+    "  ${CYAN}commit_gh${RESET} --sign" \
+    "  ${CYAN}commit_gh${RESET} --labels" \
     "" \
     "  $sep" \
     "  ${DIM}Full documentation:  man commit_gh${RESET}" \
@@ -190,6 +201,16 @@ while [[ $# -gt 0 ]]; do
   --secret-scanning) ENABLE_SECRET_SCANNING=true ;;
   --protect) PROTECT_MODE=true ;;
   --doctor)  DOCTOR_MODE=true ;;
+  --rollback)
+    if [[ "${2:-}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      ROLLBACK_TAG="$2"
+      shift
+    else
+      ROLLBACK_TAG="latest"
+    fi
+    ;;
+  --sign) SIGN_MODE=true ;;
+  --labels) LABELS_MODE=true ;;
   --force) RELEASE_FORCE=true ;;
   --no-release) RELEASE_NO_RELEASE=true ;;
   --generate-notes) RELEASE_GENERATE_NOTES=true ;;
@@ -1813,6 +1834,290 @@ run_doctor() {
   always_msg ""
 }
 
+do_rollback() {
+  local tag="${1:-latest}"
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  if [[ "$tag" == "latest" ]]; then
+    tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+    [[ -z "$tag" ]] && die "No release tags found to roll back."
+  fi
+  [[ "$tag" =~ ^v ]] || tag="v$tag"
+
+  git rev-parse "$tag" >/dev/null 2>&1 || die "Tag $tag does not exist locally."
+
+  always_msg ""
+  always_msg "${BOLD}🔄 commit_gh rollback — undoing release $tag${RESET}"
+  always_msg "$sep"
+
+  # 1. Delete GitHub release
+  if command -v gh >/dev/null 2>&1 && has_origin_remote; then
+    local remote_url repo_slug
+    remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+    repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+    if [[ -n "$repo_slug" && "$repo_slug" != "$remote_url" ]]; then
+      if gh release view "$tag" --repo "$repo_slug" >/dev/null 2>&1; then
+        if [[ "$DRY_RUN" == true ]]; then
+          msg "  DRY RUN: gh release delete $tag --repo $repo_slug --yes"
+        else
+          if gh release delete "$tag" --repo "$repo_slug" --yes 2>/dev/null; then
+            always_msg "  ${GREEN}✓${RESET} Deleted GitHub release $tag"
+          else
+            always_msg "  ${YELLOW}⚠${RESET}  Could not delete GitHub release (check admin access)"
+          fi
+        fi
+      else
+        always_msg "  ${DIM}No GitHub release found for $tag${RESET}"
+      fi
+    fi
+  fi
+
+  # 2. Delete remote tag
+  if has_origin_remote; then
+    if git ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q "$tag"; then
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "  DRY RUN: git push origin --delete $tag"
+      else
+        if git push origin --delete "$tag" >/dev/null 2>&1; then
+          always_msg "  ${GREEN}✓${RESET} Deleted remote tag $tag"
+        else
+          always_msg "  ${YELLOW}⚠${RESET}  Could not delete remote tag (check push permissions)"
+        fi
+      fi
+    else
+      always_msg "  ${DIM}Remote tag $tag not found${RESET}"
+    fi
+  fi
+
+  # 3. Delete local tag
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "  DRY RUN: git tag -d $tag"
+  else
+    git tag -d "$tag" >/dev/null 2>&1 && always_msg "  ${GREEN}✓${RESET} Deleted local tag $tag"
+  fi
+
+  # 4. Revert release commit if it is HEAD and matches this tag
+  local head_msg tag_version
+  head_msg="$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "")"
+  tag_version="${tag#v}"
+  if [[ "$head_msg" == "chore: release v${tag_version}" ]]; then
+    always_msg "  ${DIM}Release commit detected at HEAD: ${head_msg}${RESET}"
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "  DRY RUN: git revert HEAD --no-edit"
+      msg "  DRY RUN: git push origin $(detect_branch)"
+    else
+      if git revert HEAD --no-edit >/dev/null 2>&1; then
+        always_msg "  ${GREEN}✓${RESET} Reverted release commit (VERSION restored)"
+        if has_origin_remote; then
+          git push origin "$(detect_branch)" >/dev/null 2>&1 && \
+            always_msg "  ${GREEN}✓${RESET} Pushed revert to origin"
+        fi
+      else
+        always_msg "  ${YELLOW}⚠${RESET}  Auto-revert failed — revert manually: ${DIM}git revert HEAD${RESET}"
+      fi
+    fi
+  else
+    always_msg "  ${DIM}HEAD is not the release commit — VERSION file not auto-reverted${RESET}"
+  fi
+
+  always_msg "$sep"
+  always_msg "  ${GREEN}${BOLD}Rollback of $tag complete.${RESET} 🔄"
+  always_msg ""
+}
+
+setup_signing() {
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  local issues=0
+
+  always_msg ""
+  always_msg "${BOLD}🔏 commit_gh sign — commit signing setup${RESET}"
+  always_msg "$sep"
+
+  # Detect GPG key
+  local gpg_key_id=""
+  if command -v gpg >/dev/null 2>&1; then
+    gpg_key_id="$(gpg --list-secret-keys --keyid-format LONG 2>/dev/null \
+      | grep '^sec' | head -n1 \
+      | grep -oE '[A-F0-9]{16}' | head -n1 || true)"
+  fi
+
+  # Detect SSH public key
+  local ssh_pub_key=""
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+    ssh_pub_key="$(ssh-add -L 2>/dev/null | head -n1 || true)"
+  fi
+
+  local current_gpgsign gpg_format current_sigkey
+  current_gpgsign="$(git config --global --get commit.gpgsign 2>/dev/null || echo "false")"
+  gpg_format="$(git config --global --get gpg.format 2>/dev/null || echo "openpgp")"
+  current_sigkey="$(git config --global --get user.signingkey 2>/dev/null || echo "")"
+
+  if [[ -n "$gpg_key_id" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  GPG key              ${BOLD}${gpg_key_id}${RESET}"
+    if [[ "$current_gpgsign" == "true" && "$gpg_format" == "openpgp" ]]; then
+      always_msg "  ${GREEN}✅${RESET}  GPG signing          already enabled"
+    else
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "  DRY RUN: git config --global commit.gpgsign true"
+        msg "  DRY RUN: git config --global gpg.format openpgp"
+        msg "  DRY RUN: git config --global user.signingkey $gpg_key_id"
+      else
+        git config --global commit.gpgsign true
+        git config --global gpg.format openpgp
+        [[ -z "$current_sigkey" ]] && git config --global user.signingkey "$gpg_key_id"
+        always_msg "  ${GREEN}✅${RESET}  GPG signing          enabled  ${DIM}(commit.gpgsign=true, key=$gpg_key_id)${RESET}"
+      fi
+    fi
+  elif [[ -n "$ssh_pub_key" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  SSH key              found in agent"
+    if [[ "$current_gpgsign" == "true" && "$gpg_format" == "ssh" ]]; then
+      always_msg "  ${GREEN}✅${RESET}  SSH signing          already enabled"
+    else
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "  DRY RUN: git config --global gpg.format ssh"
+        msg "  DRY RUN: git config --global user.signingkey \"<ssh-pub-key>\""
+        msg "  DRY RUN: git config --global commit.gpgsign true"
+      else
+        git config --global gpg.format ssh
+        git config --global user.signingkey "$ssh_pub_key"
+        git config --global commit.gpgsign true
+        always_msg "  ${GREEN}✅${RESET}  SSH signing          enabled  ${DIM}(gpg.format=ssh)${RESET}"
+        always_msg "  ${DIM}  Tip: add your public key to ~/.ssh/allowed_signers for local verification${RESET}"
+        always_msg "       ${DIM}echo \"\$(git config user.email) $ssh_pub_key\" >> ~/.ssh/allowed_signers${RESET}"
+        always_msg "       ${DIM}git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers${RESET}"
+      fi
+    fi
+  else
+    always_msg "  ${RED}❌${RESET}  No signing key found"
+    always_msg "     ${DIM}GPG:  gpg --gen-key${RESET}"
+    always_msg "     ${DIM}SSH:  ssh-keygen -t ed25519 -C \"$(git config --global user.email 2>/dev/null || echo "you@example.com")\"${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # Add CI workflow to current repo
+  if in_git_repo && [[ $issues -eq 0 ]]; then
+    local wf_dir wf_file repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    wf_dir="$repo_root/.github/workflows"
+    wf_file="$wf_dir/signed-commits.yml"
+    if [[ ! -f "$wf_file" ]]; then
+      if [[ "$DRY_RUN" == true ]]; then
+        msg "  DRY RUN: create .github/workflows/signed-commits.yml"
+      else
+        mkdir -p "$wf_dir"
+        cat > "$wf_file" <<'SIGN_WF'
+name: Verify signed commits
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  signed-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Check commit signatures
+        run: |
+          COMMITS=$(git log --pretty="%G?" origin/main..HEAD 2>/dev/null || true)
+          if [[ -z "$COMMITS" ]]; then
+            echo "No commits to verify."
+            exit 0
+          fi
+          if echo "$COMMITS" | grep -qvE '^[GU]$'; then
+            echo "Unsigned or invalid commits detected."
+            exit 1
+          fi
+          echo "All commits signed."
+SIGN_WF
+        always_msg "  ${GREEN}✅${RESET}  CI workflow          .github/workflows/signed-commits.yml created"
+      fi
+    else
+      always_msg "  ${GREEN}✅${RESET}  CI workflow          signed-commits.yml already present"
+    fi
+    always_msg "  ${DIM}  Remember to upload your public key to GitHub → Settings → SSH and GPG keys${RESET}"
+  fi
+
+  always_msg "$sep"
+  if [[ $issues -eq 0 ]]; then
+    always_msg "  ${GREEN}${BOLD}Commit signing configured.${RESET} 🔏"
+  else
+    always_msg "  ${YELLOW}${BOLD}${issues} issue(s) found.${RESET}  Set up a signing key, then re-run ${CYAN}commit_gh --sign${RESET}."
+  fi
+  always_msg ""
+}
+
+setup_labels() {
+  command -v gh >/dev/null 2>&1 || die "gh CLI not found. Install with: brew install gh"
+  has_origin_remote || die "No origin remote found. Run --init-remote first."
+
+  local remote_url repo_slug
+  remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+  repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+  [[ -z "$repo_slug" || "$repo_slug" == "$remote_url" ]] && die "Could not determine repo slug from origin URL."
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  always_msg ""
+  always_msg "${BOLD}🏷️  commit_gh labels — GitHub label setup${RESET}"
+  always_msg "$sep"
+  always_msg "  Repo: ${BOLD}${repo_slug}${RESET}"
+  always_msg ""
+
+  # name|hex-color|description  (no colons in description)
+  local -a label_defs=(
+    "bug|d73a4a|Something isn't working"
+    "enhancement|a2eeef|New feature or request"
+    "security|e4e669|Security vulnerability or hardening"
+    "breaking|b60205|Breaking change — requires consumer action"
+    "documentation|0075ca|Improvements or additions to documentation"
+    "good first issue|7057ff|Good for newcomers"
+    "help wanted|008672|Extra attention is needed"
+    "question|d876e3|Further information is requested"
+    "wontfix|ffffff|This will not be worked on"
+    "duplicate|cfd3d7|This issue or pull request already exists"
+    "dependencies|0366d6|Dependency update"
+    "ci/cd|f9d0c4|Continuous integration and deployment"
+  )
+
+  local created=0 failed=0 lname lcolor ldesc
+  for def in "${label_defs[@]}"; do
+    IFS='|' read -r lname lcolor ldesc <<< "$def"
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "  DRY RUN: gh label create \"$lname\" --color \"$lcolor\" --description \"$ldesc\" --force"
+      continue
+    fi
+    if gh label create "$lname" \
+        --color "$lcolor" \
+        --description "$ldesc" \
+        --repo "$repo_slug" \
+        --force 2>/dev/null; then
+      always_msg "  ${GREEN}✓${RESET}  ${BOLD}${lname}${RESET}  ${DIM}#${lcolor}${RESET}"
+      created=$((created + 1))
+    else
+      always_msg "  ${RED}✗${RESET}  ${lname}  ${DIM}(failed — check admin access)${RESET}"
+      failed=$((failed + 1))
+    fi
+  done
+
+  always_msg ""
+  always_msg "$sep"
+  if [[ "$DRY_RUN" == true ]]; then
+    always_msg "  ${DIM}DRY RUN: would create/update ${#label_defs[@]} labels on ${repo_slug}${RESET}"
+  elif [[ $failed -eq 0 ]]; then
+    always_msg "  ${GREEN}${BOLD}${created} labels configured.${RESET} 🏷️"
+    always_msg "  ${DIM}View: https://github.com/${repo_slug}/labels${RESET}"
+  else
+    always_msg "  ${YELLOW}${BOLD}${created} created, ${failed} failed.${RESET}  Check admin access on ${repo_slug}."
+  fi
+  always_msg ""
+}
+
 # ----------------------------
 # Standalone modes (harden → audit → scan — all exit after running)
 # Run harden before audit so --harden --audit hardens first, then reports.
@@ -1856,6 +2161,25 @@ fi
 
 if [[ "$DOCTOR_MODE" == true ]]; then
   run_doctor
+  exit 0
+fi
+
+if [[ -n "$ROLLBACK_TAG" ]]; then
+  in_git_repo || die "Not inside a git repository. --rollback requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  do_rollback "$ROLLBACK_TAG"
+  exit 0
+fi
+
+if [[ "$SIGN_MODE" == true ]]; then
+  setup_signing
+  exit 0
+fi
+
+if [[ "$LABELS_MODE" == true ]]; then
+  in_git_repo || die "Not inside a git repository. --labels requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  setup_labels
   exit 0
 fi
 

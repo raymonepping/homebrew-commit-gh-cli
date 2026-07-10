@@ -30,7 +30,7 @@ _commit_gh() {
     --quiet -q --dry-run
     --init-repo --init-remote --public --private
     --harden --audit --scan --no-scan --no-hook --secret-scanning
-    --protect --doctor
+    --protect --doctor --rollback --sign --labels
     --release --force --no-release --generate-notes
     --read-version-only --version-file
     --branch --message --tree

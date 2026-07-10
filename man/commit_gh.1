@@ -1,4 +1,4 @@
-.TH COMMIT_GH 1 "July 2026" "commit_gh 2.3.1" "User Commands"
+.TH COMMIT_GH 1 "July 2026" "commit_gh 2.4.0" "User Commands"
 .SH NAME
 commit_gh \- secure git commits, releases, and repository hardening
 .SH SYNOPSIS
@@ -143,6 +143,27 @@ Suppress informational output. Error messages are always printed.
 Regenerate the folder tree using \fBfolder_tree\fR(1) before committing.
 The optional argument defaults to \fItrue\fR when omitted.
 .SS Utilities
+.TP
+.BR \-\-rollback " [" \fItag\fR ]
+Delete a GitHub release and its associated git tag (locally and on origin).
+If \fItag\fR is omitted, the latest semver tag is used.
+When the release commit (\fIchore: release vX.Y.Z\fR) is the current HEAD,
+a revert commit is created automatically so the VERSION file is restored.
+Idempotent: safe to run when the release or remote tag is already gone.
+.TP
+.B \-\-sign
+Configure GPG or SSH commit signing globally.
+Detects the first available secret key (GPG preferred, SSH fallback),
+sets \fIcommit.gpgsign=true\fR and \fIuser.signingkey\fR in global git config,
+and writes \fI.github/workflows/signed-commits.yml\fR to the current repository
+so CI rejects unsigned commits on \fImain\fR.
+Run \fBgpg \-\-gen\-key\fR or \fBssh\-keygen \-t ed25519\fR first if no key exists.
+.TP
+.B \-\-labels
+Create (or update) the standard set of GitHub issue labels on the remote
+repository via the GitHub CLI.
+Idempotent: existing labels are updated with the canonical colour and description.
+Requires admin access to the repository.
 .TP
 .BR \-\-bump " " \fIpatch\fR|\fIminor\fR|\fImajor\fR
 Create a new annotated git tag by incrementing the latest existing tag.

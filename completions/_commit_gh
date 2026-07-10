@@ -32,6 +32,9 @@ _commit_gh() {
     \
     '--protect[set branch protection on remote (1 review required, no force-push)]' \
     '--doctor[check developer environment — bash, git, gitleaks, gh, SSH]' \
+    '--rollback=[delete a GitHub release and its tag (default: latest tag)]:tag' \
+    '--sign[enable GPG or SSH commit signing — global config plus CI workflow]' \
+    '--labels[create standard GitHub issue labels on remote — idempotent]' \
     '--bump=[create a new git tag from the latest tag]:bump type:(patch minor major)' \
     '--preview[preview next --bump tag without creating it]' \
     '--verify[run verification checks (clean tree, branch, version)]'
