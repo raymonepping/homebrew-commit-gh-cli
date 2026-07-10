@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.20"
+VERSION="2.0.21"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -239,7 +239,14 @@ unstage_blocked_files() {
   msg "⚠️ Unstaging sensitive file(s) — add to .gitignore to prevent restaging:"
   while IFS= read -r f; do
     msg "   🚫 $f"
-    git restore --staged "$f" >/dev/null 2>&1 || true
+    # git restore --staged requires HEAD; use git rm --cached for new/empty-repo files
+    if git rev-parse HEAD >/dev/null 2>&1 && git cat-file -e "HEAD:$f" 2>/dev/null; then
+      git restore --staged "$f" >/dev/null 2>&1 \
+        || msg "   ⚠️ Could not unstage $f — run: git restore --staged \"$f\""
+    else
+      git rm --cached "$f" >/dev/null 2>&1 \
+        || msg "   ⚠️ Could not unstage $f — run: git rm --cached \"$f\""
+    fi
   done <<< "$blocked"
 }
 
