@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.2"
+VERSION="2.0.3"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -60,6 +60,12 @@ ENABLE_SECRET_SCANNING=false  # --secret-scanning: enable GitHub secret scanning
 AUDIT_MODE=false        # --audit: check which guardrails are present/missing
 HARDEN_MODE=false       # --harden: install missing guardrails in existing repo
 
+# v2.1 release flags
+RELEASE_FORCE=false         # --force: overwrite existing tag + GitHub release
+RELEASE_NO_RELEASE=false    # --no-release: tag+push only, skip GitHub release
+RELEASE_GENERATE_NOTES=false # --generate-notes: auto-generate release notes via gh
+READ_VERSION_ONLY=false     # --read-version-only: print version inventory and exit
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -84,10 +90,14 @@ usage() {
     "  ${BOLD}--init-repo${RESET}                 Initialize a git repo in the current directory if missing" \
     "  ${BOLD}--init-remote${RESET}               Create 'origin' via GitHub CLI (gh) if missing" \
     "  ${BOLD}--public${RESET}                    When creating remote, make it public (default: private)" \
-    "  ${BOLD}--release${RESET} ${YELLOW}patch|minor|major${RESET}  Bump VERSION file, commit, tag, push, create GitHub release" \
+    "  ${BOLD}--release${RESET} ${YELLOW}patch|minor|major|x.y.z${RESET}  Bump VERSION, commit, tag, push, GitHub release" \
+    "  ${BOLD}--force${RESET}                     Overwrite existing tag and GitHub release (use with --release)" \
+    "  ${BOLD}--no-release${RESET}                Tag and push only; skip GitHub release creation" \
+    "  ${BOLD}--generate-notes${RESET}            Auto-generate GitHub release notes (default: static message)" \
+    "  ${BOLD}--read-version-only${RESET}         Print version inventory (VERSION file, script, tag) and exit" \
     "  ${BOLD}--version-file${RESET} ${YELLOW}<path>${RESET}       Version file to use for --release (default: VERSION)" \
     "  ${BOLD}--branch${RESET} ${YELLOW}<name>${RESET}             Branch to use (default: detected current branch, else main)" \
-    "  ${BOLD}--message${RESET} ${YELLOW}\"<msg>\"${RESET}           Override commit message (otherwise timestamp-based)" \
+    "  ${BOLD}--message${RESET} ${YELLOW}\"<msg>\"${RESET}           Override commit message (default: chore: release vX.Y.Z)" \
     "  ${BOLD}--dry-run${RESET}                   Show what would happen without making changes" \
     "" \
     "${BOLD}${RED}Security (v2.0):${RESET}" \
@@ -117,7 +127,10 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --init-repo --init-remote --public --secret-scanning" \
     "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --release patch" \
-    "  ${CYAN}commit_gh${RESET} --release minor --init-remote --public" \
+    "  ${CYAN}commit_gh${RESET} --release 2.1.0 --generate-notes" \
+    "  ${CYAN}commit_gh${RESET} --release patch --force" \
+    "  ${CYAN}commit_gh${RESET} --release minor --no-release" \
+    "  ${CYAN}commit_gh${RESET} --read-version-only" \
     "  ${CYAN}commit_gh${RESET} --message \"chore: sync changes\" --tree true" \
     ""
 }
@@ -146,6 +159,10 @@ while [[ $# -gt 0 ]]; do
   --no-scan) NO_SCAN=true ;;
   --no-hook) NO_HOOK=true ;;
   --secret-scanning) ENABLE_SECRET_SCANNING=true ;;
+  --force) RELEASE_FORCE=true ;;
+  --no-release) RELEASE_NO_RELEASE=true ;;
+  --generate-notes) RELEASE_GENERATE_NOTES=true ;;
+  --read-version-only) READ_VERSION_ONLY=true ;;
   --branch)
     [[ -n "${2:-}" ]] || die "--branch requires a value"
     BRANCH="$2"
@@ -162,12 +179,15 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --release)
-    case "${2:-}" in patch | minor | major)
+    if [[ "${2:-}" =~ ^(patch|minor|major)$ ]]; then
       RELEASE_BUMP="$2"
       shift
-      ;;
-    *) die "Invalid value for --release. Use: patch | minor | major" ;;
-    esac
+    elif [[ "${2:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      RELEASE_BUMP="$2"
+      shift
+    else
+      die "--release requires: patch | minor | major | x.y.z  (got: '${2:-}')"
+    fi
     ;;
   --bump)
     case "${2:-patch}" in patch | minor | major)
@@ -646,19 +666,82 @@ create_github_release() {
     return 0
   }
 
+  local notes_flag="--notes \"Release $tag\""
+  [[ "$RELEASE_GENERATE_NOTES" == true ]] && notes_flag="--generate-notes"
+
   if [[ "$DRY_RUN" == true ]]; then
-    msg "DRY RUN: gh release view \"$tag\""
-    msg "DRY RUN: gh release create \"$tag\" --title \"$tag\" --notes \"Release $tag\""
+    msg "DRY RUN: gh release create \"$tag\" --title \"$tag\" $notes_flag"
     return 0
   fi
 
   if gh release view "$tag" >/dev/null 2>&1; then
-    msg "⚠️ GitHub release $tag already exists. Skipping."
-    return 0
+    if [[ "$RELEASE_FORCE" == true ]]; then
+      msg "🗑️ Deleting existing GitHub release $tag (--force)..."
+      gh release delete "$tag" --yes >/dev/null 2>&1 || true
+    else
+      msg "⚠️ GitHub release $tag already exists. Use --force to overwrite."
+      return 0
+    fi
   fi
 
   msg "📦 Creating GitHub release $tag..."
-  gh release create "$tag" --title "$tag" --notes "Release $tag"
+  if [[ "$RELEASE_GENERATE_NOTES" == true ]]; then
+    gh release create "$tag" --title "$tag" --generate-notes
+  else
+    gh release create "$tag" --title "$tag" --notes "Release $tag"
+  fi
+}
+
+run_read_version() {
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+
+  local repo_name vf_version script_version latest_tag tag_version consistent=true
+  repo_name="$(basename "$(pwd)")"
+
+  vf_version="$([ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo "missing")"
+  script_version="n/a"
+  if [[ -f "bin/commit_gh" ]]; then
+    script_version="$(grep -E '^VERSION="[^"]+"' "bin/commit_gh" | head -n1 | sed -E 's/^VERSION="([^"]+)".*/\1/')"
+  fi
+  latest_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+  [[ -z "$latest_tag" ]] && latest_tag="none"
+  tag_version="${latest_tag#v}"
+  [[ "$latest_tag" == "none" ]] && tag_version="none"
+
+  always_msg ""
+  always_msg "${BOLD}${CYAN}── Version inventory: ${repo_name}${RESET}"
+  always_msg "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  printf "  %-30s ${BOLD}%s${RESET}\n" "$VERSION_FILE" "$vf_version"
+  [[ "$script_version" != "n/a" ]] && printf "  %-30s ${BOLD}%s${RESET}\n" "bin/commit_gh VERSION=" "$script_version"
+  printf "  %-30s ${BOLD}%s${RESET}\n" "Latest git tag" "$latest_tag"
+  always_msg "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  if [[ "$vf_version" == "missing" ]]; then
+    always_msg "  ${RED}✗ $VERSION_FILE not found${RESET}"
+    consistent=false
+  elif [[ "$latest_tag" == "none" ]]; then
+    always_msg "  ${YELLOW}⚠ No tags yet — next release will create v$vf_version${RESET}"
+  elif [[ "$vf_version" != "$tag_version" ]]; then
+    always_msg "  ${RED}✗ VERSION ($vf_version) does not match latest tag ($latest_tag)${RESET}"
+    consistent=false
+  else
+    always_msg "  ${GREEN}✓ VERSION and latest tag aligned at $vf_version${RESET}"
+  fi
+
+  if [[ "$script_version" != "n/a" && "$script_version" != "$vf_version" ]]; then
+    always_msg "  ${YELLOW}⚠ bin/commit_gh VERSION= ($script_version) ≠ VERSION file ($vf_version)${RESET}"
+    consistent=false
+  fi
+
+  always_msg ""
+  if [[ "$consistent" == true ]]; then
+    always_msg "  ${GREEN}${BOLD}✓ Version sources consistent.${RESET}"
+  else
+    always_msg "  ${RED}${BOLD}✗ Version sources inconsistent.${RESET}"
+    exit 1
+  fi
+  always_msg ""
 }
 
 # ----------------------------
@@ -675,6 +758,11 @@ if [[ "$HARDEN_MODE" == true ]]; then
   msg "🛡️ Hardening repo: $(basename "$(pwd)")"
   setup_security_files
   always_msg "🎉 Done. Run ${CYAN}commit_gh --audit${RESET} to verify."
+  exit 0
+fi
+
+if [[ "$READ_VERSION_ONLY" == true ]]; then
+  run_read_version
   exit 0
 fi
 
@@ -736,13 +824,50 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   current_version="$(<"$vf_path")"
   read_semver "$current_version" || die "Invalid VERSION '$current_version'. Expected X.Y.Z"
 
-  new_version="$(bump_semver "$RELEASE_BUMP" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
+  # Explicit x.y.z or bump type
+  if [[ "$RELEASE_BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    new_version="$RELEASE_BUMP"
+  else
+    new_version="$(bump_semver "$RELEASE_BUMP" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
+  fi
   new_tag="v${new_version}"
 
-  msg "🏷️ Release bump: $RELEASE_BUMP"
-  msg "🔎 Current VERSION: $current_version"
-  msg "🎯 New VERSION:     $new_version"
-  msg "🎯 Tag:             $new_tag"
+  # Default commit message
+  release_commit_msg="${COMMIT_MESSAGE_OVERRIDE:-chore: release ${new_tag}}"
+
+  # ── Pre-flight checks ──────────────────────────────────────────
+  msg ""
+  msg "${BOLD}── Pre-flight checks ────────────────────────────────────────────${RESET}"
+  in_git_repo && msg "  ${GREEN}✓${RESET} git repository" || die "Not inside a git repository."
+  if has_origin_remote; then
+    msg "  ${GREEN}✓${RESET} origin remote: $(git remote get-url origin)"
+  else
+    msg "  ${YELLOW}⚠${RESET} no origin remote — push and GitHub release will be skipped"
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    msg "  ${GREEN}✓${RESET} gh CLI available"
+  else
+    msg "  ${YELLOW}⚠${RESET} gh CLI not found — GitHub release will be skipped"
+  fi
+  if [[ "$RELEASE_FORCE" != true ]] && git rev-parse "$new_tag" >/dev/null 2>&1; then
+    die "Tag $new_tag already exists. Use --force to overwrite."
+  fi
+  msg ""
+
+  # ── Release plan ───────────────────────────────────────────────
+  msg "${BOLD}── Release plan ─────────────────────────────────────────────────${RESET}"
+  msg "  Version       : ${BOLD}$current_version → $new_version${RESET}"
+  msg "  Tag           : ${BOLD}$new_tag${RESET}"
+  msg "  Branch        : $branch"
+  msg "  Commit msg    : $release_commit_msg"
+  msg "  GitHub release: $([ "$RELEASE_NO_RELEASE" = true ] && echo "skipped (--no-release)" || ([ "$RELEASE_GENERATE_NOTES" = true ] && echo "yes (--generate-notes)" || echo "yes"))"
+  msg "  Force         : $([ "$RELEASE_FORCE" = true ] && echo "${YELLOW}yes — will overwrite existing tag + release${RESET}" || echo "no")"
+  if [[ "$DRY_RUN" == true ]]; then
+    msg ""
+    msg "  ${YELLOW}${BOLD}DRY RUN — no changes will be made${RESET}"
+    msg ""
+  fi
+  msg ""
 
   # Sync first (avoid stash eating our edits)
   sync_with_remote_rebase "$branch"
@@ -758,55 +883,70 @@ if [[ -n "$RELEASE_BUMP" ]]; then
     fi
   fi
 
-  # Update VERSION file
+  # ── 1/4 Update VERSION file ────────────────────────────────────
+  msg "${BOLD}── 1/4  Update VERSION file ─────────────────────────────────────${RESET}"
   if [[ "$DRY_RUN" == true ]]; then
-    msg "DRY RUN: echo \"$new_version\" > \"$vf_path\""
+    msg "  DRY RUN: echo \"$new_version\" > \"$vf_path\""
   else
     echo "$new_version" >"$vf_path"
+    msg "  ${GREEN}✓${RESET} $VERSION_FILE → $new_version"
   fi
 
-  # Stage and commit
+  # ── 2/4 Commit ────────────────────────────────────────────────
+  msg "${BOLD}── 2/4  Commit ──────────────────────────────────────────────────${RESET}"
   if [[ "$DRY_RUN" == true ]]; then
-    msg "DRY RUN: git add \"$vf_path\""
-    msg "DRY RUN: git add ."
-    msg "DRY RUN: git commit -m \"Release $new_tag\""
+    msg "  DRY RUN: git add . && git commit -m \"$release_commit_msg\""
   else
     git add "$vf_path" >/dev/null
     git add . >/dev/null
     if git diff --cached --quiet; then
-      msg "⚠️ No staged changes to commit. Release flow will still tag if tag does not exist."
+      msg "  ${YELLOW}⚠${RESET} Nothing to commit (working tree already clean)"
     else
-      git commit -m "Release $new_tag" >/dev/null
+      git commit -m "$release_commit_msg" >/dev/null
+      msg "  ${GREEN}✓${RESET} Committed: $release_commit_msg"
     fi
   fi
 
-  # Tag
-  if git rev-parse "$new_tag" >/dev/null 2>&1; then
-    die "Tag $new_tag already exists. Aborting to avoid overwriting."
+  # ── 3/4 Tag ───────────────────────────────────────────────────
+  msg "${BOLD}── 3/4  Tag ─────────────────────────────────────────────────────${RESET}"
+  if git rev-parse "$new_tag" >/dev/null 2>&1 && [[ "$RELEASE_FORCE" == true ]]; then
+    if [[ "$DRY_RUN" != true ]]; then
+      git tag -d "$new_tag" >/dev/null
+      git push origin ":refs/tags/$new_tag" >/dev/null 2>&1 || true
+      msg "  ${YELLOW}⚠${RESET} Deleted existing tag $new_tag (--force)"
+    fi
   fi
-
   if [[ "$DRY_RUN" == true ]]; then
-    msg "DRY RUN: git tag -a \"$new_tag\" -m \"Release $new_tag\""
+    msg "  DRY RUN: git tag -a \"$new_tag\" -m \"$release_commit_msg\""
   else
-    git tag -a "$new_tag" -m "Release $new_tag" >/dev/null
+    git tag -a "$new_tag" -m "$release_commit_msg" >/dev/null
+    msg "  ${GREEN}✓${RESET} Tagged $new_tag"
   fi
 
   # Push branch and tag
   if has_origin_remote; then
     if [[ "$DRY_RUN" == true ]]; then
-      msg "DRY RUN: git push origin \"$branch\""
-      msg "DRY RUN: git push origin \"$new_tag\""
+      msg "  DRY RUN: git push origin \"$branch\" && git push origin \"$new_tag\""
     else
       git push origin "$branch" >/dev/null 2>&1 || die "Push branch failed."
       git push origin "$new_tag" >/dev/null 2>&1 || die "Push tag failed."
-      msg "🚀 Pushed $branch and $new_tag to origin."
+      msg "  ${GREEN}✓${RESET} Pushed $branch and $new_tag to origin"
     fi
   else
-    msg "⚠️ No origin remote. Skipping push and GitHub release."
+    msg "  ${YELLOW}⚠${RESET} No origin remote — push skipped"
   fi
 
-  create_github_release "$new_tag"
-  msg "✅ Release complete: $new_tag"
+  # ── 4/4 GitHub release ────────────────────────────────────────
+  msg "${BOLD}── 4/4  GitHub release ──────────────────────────────────────────${RESET}"
+  if [[ "$RELEASE_NO_RELEASE" == true ]]; then
+    msg "  ${YELLOW}⚠${RESET} Skipped (--no-release)"
+  else
+    create_github_release "$new_tag"
+  fi
+
+  msg ""
+  msg "${GREEN}${BOLD}✅ Release complete: $new_tag${RESET}"
+  msg ""
 fi
 
 # ----------------------------
@@ -880,7 +1020,7 @@ try_push() {
         if ! git pull --rebase origin "$branch" >/dev/null 2>&1; then
           die "Pull/rebase failed. Resolve manually."
         fi
-        ((attempt++))
+        attempt=$((attempt + 1))
       fi
     else
       return 0
