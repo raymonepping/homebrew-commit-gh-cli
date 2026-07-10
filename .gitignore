@@ -123,3 +123,13 @@ docker-compose.override.yml
 .terraform/
 *.tfstate
 *.tfstate.backup
+
+# ── Added by commit_gh --harden ─────────────────────────────
+*.env
+.vault.*
+*.vault
+*.jsonl
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
