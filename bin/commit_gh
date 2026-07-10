@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.6"
+VERSION="2.0.7"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -941,12 +941,10 @@ update_self_version_constant() {
   local target_path
   target_path="$(resolve_script_target)"
 
-  if [[ ! -f "$target_path" ]]; then
-    die "Cannot update VERSION constant: not a regular file: $target_path"
-  fi
-
-  if [[ ! -w "$target_path" ]]; then
-    die "Cannot update VERSION constant: file is not writable: $target_path\n   Ensure you are running from inside the commit_gh_cli repo directory."
+  # Not in the commit_gh_cli repo — skip silently. The VERSION constant only
+  # needs updating when releasing commit_gh itself.
+  if [[ ! -f "$target_path" ]] || [[ ! -w "$target_path" ]]; then
+    return 0
   fi
 
   if grep -qE '^VERSION="[^"]+"' "$target_path"; then
@@ -1227,8 +1225,9 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   # Update the script's VERSION constant (repo copy); dies if target not writable
   update_self_version_constant "$new_version"
 
-  # Guard: verify the on-disk constant matches (skipped in dry-run since no write occurred)
-  if [[ "$DRY_RUN" != true ]]; then
+  # Guard: only when releasing commit_gh itself (target is writable repo copy)
+  _guard_target="$(resolve_script_target)"
+  if [[ "$DRY_RUN" != true ]] && [[ -f "$_guard_target" ]] && [[ -w "$_guard_target" ]]; then
     self_version="$(get_self_version_constant)"
     if [[ "$self_version" != "$new_version" ]]; then
       die "Refusing to tag: bin/commit_gh VERSION is $self_version but release version is $new_version"
