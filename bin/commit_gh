@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.3.2"
+VERSION="2.3.3"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -1562,29 +1562,20 @@ resolve_realpath() {
 # This lets the globally-installed Homebrew binary correctly update the repo
 # copy rather than trying to write to the read-only Cellar.
 resolve_script_target() {
+  # Returns the path to bin/commit_gh ONLY if it exists in the current git repo.
+  # Returns empty string when not in the commit_gh_cli repo, to avoid accidentally
+  # modifying the installed binary when releasing unrelated projects.
   local repo_root
-  if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    local candidate="$repo_root/bin/commit_gh"
-    if [[ -f "$candidate" ]]; then
-      resolve_realpath "$candidate"
-      return 0
-    fi
-  fi
-  local self_path
-  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  resolve_realpath "$self_path"
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  local candidate="$repo_root/bin/commit_gh"
+  [[ -f "$candidate" ]] && resolve_realpath "$candidate" || true
 }
 
 update_self_version_constant() {
   local new_version="$1"
   local target_path
   target_path="$(resolve_script_target)"
-
-  # Not in the commit_gh_cli repo — skip silently. The VERSION constant only
-  # needs updating when releasing commit_gh itself.
-  if [[ ! -f "$target_path" ]] || [[ ! -w "$target_path" ]]; then
-    return 0
-  fi
+  [[ -z "$target_path" ]] && return 0  # Not in the commit_gh_cli repo — skip silently
 
   if grep -qE '^VERSION="[^"]+"' "$target_path"; then
     if [[ "$DRY_RUN" == true ]]; then
@@ -1599,6 +1590,7 @@ update_self_version_constant() {
 get_self_version_constant() {
   local target_path
   target_path="$(resolve_script_target)"
+  [[ -z "$target_path" ]] && return 0  # Not in the commit_gh_cli repo
 
   grep -E '^VERSION="[^"]+"' "$target_path" |
     head -n1 |
@@ -1968,11 +1960,10 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   # Update the script's VERSION constant (repo copy); dies if target not writable
   update_self_version_constant "$new_version"
 
-  # Guard: only when releasing commit_gh itself (target is writable repo copy)
-  _guard_target="$(resolve_script_target)"
-  if [[ "$DRY_RUN" != true ]] && [[ -f "$_guard_target" ]] && [[ -w "$_guard_target" ]]; then
+  # Guard: only when releasing commit_gh itself (current repo has bin/commit_gh)
+  if [[ "$DRY_RUN" != true ]]; then
     self_version="$(get_self_version_constant)"
-    if [[ "$self_version" != "$new_version" ]]; then
+    if [[ -n "$self_version" && "$self_version" != "$new_version" ]]; then
       die "Refusing to tag: bin/commit_gh VERSION is $self_version but release version is $new_version"
     fi
   fi
