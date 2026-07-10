@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.10"
+VERSION="2.0.11"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -873,8 +873,7 @@ enable_github_secret_scanning() {
 run_gitleaks_scan() {
   local mode="${1:-source}"  # "source" = full tree, "staged" = only staged files
   if ! gitleaks_available; then
-    msg "⚠️ gitleaks not found. Skipping scan. Install with: brew install gitleaks"
-    return 0
+    return 0  # silent skip — commit_gh --audit will surface this gap
   fi
   if [[ "$mode" == "staged" ]]; then
     msg "🔍 Gitleaks: scanning staged files..."
