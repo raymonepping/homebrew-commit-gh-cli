@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.4.0"
+VERSION="2.4.1"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -2119,48 +2119,37 @@ setup_labels() {
 }
 
 # ----------------------------
-# Standalone modes (harden → audit → scan — all exit after running)
-# Run harden before audit so --harden --audit hardens first, then reports.
+# Standalone modes — combinable flags run in sequence, then exit.
+# Exclusive flags (rollback, read-version-only, scan) exit immediately.
+# Harden always runs before audit when both are given.
 # ----------------------------
+_ran_standalone=false
+_audit_exit=0
+
 if [[ "$HARDEN_MODE" == true ]]; then
   in_git_repo || die "Not inside a git repository. --harden requires an existing repo."
   cd "$(git rev-parse --show-toplevel)" || exit 1
   msg "🛡️ Hardening repo: $(basename "$(pwd)")"
   setup_security_files
-  if [[ "$AUDIT_MODE" != true ]]; then
-    always_msg "🎉 Done. Run ${CYAN}commit_gh --audit${RESET} to verify."
-    exit 0
-  fi
+  [[ "$AUDIT_MODE" != true ]] && always_msg "  Run ${CYAN}commit_gh --audit${RESET} to verify."
+  _ran_standalone=true
 fi
 
 if [[ "$AUDIT_MODE" == true ]]; then
-  run_audit
-  exit $?
+  run_audit || _audit_exit=$?
+  _ran_standalone=true
 fi
 
+# Exclusive standalone modes — exit immediately, cannot be combined
 if [[ "$READ_VERSION_ONLY" == true ]]; then
   run_read_version
   exit 0
 fi
 
 if [[ "$SCAN_MODE" == true ]]; then
-  if ! gitleaks_available; then
-    die "gitleaks not found. Install with: brew install gitleaks"
-  fi
+  gitleaks_available || die "gitleaks not found. Install with: brew install gitleaks"
   run_gitleaks_scan "source"
   always_msg "🎉 Done."
-  exit 0
-fi
-
-if [[ "$PROTECT_MODE" == true ]]; then
-  in_git_repo || die "Not inside a git repository. --protect requires an existing repo."
-  cd "$(git rev-parse --show-toplevel)" || exit 1
-  enable_branch_protection "$(detect_branch)"
-  exit 0
-fi
-
-if [[ "$DOCTOR_MODE" == true ]]; then
-  run_doctor
   exit 0
 fi
 
@@ -2171,16 +2160,33 @@ if [[ -n "$ROLLBACK_TAG" ]]; then
   exit 0
 fi
 
+# Combinable standalone modes
+if [[ "$PROTECT_MODE" == true ]]; then
+  in_git_repo || die "Not inside a git repository. --protect requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  enable_branch_protection "$(detect_branch)"
+  _ran_standalone=true
+fi
+
+if [[ "$DOCTOR_MODE" == true ]]; then
+  run_doctor
+  _ran_standalone=true
+fi
+
 if [[ "$SIGN_MODE" == true ]]; then
   setup_signing
-  exit 0
+  _ran_standalone=true
 fi
 
 if [[ "$LABELS_MODE" == true ]]; then
   in_git_repo || die "Not inside a git repository. --labels requires an existing repo."
   cd "$(git rev-parse --show-toplevel)" || exit 1
   setup_labels
-  exit 0
+  _ran_standalone=true
+fi
+
+if [[ "$_ran_standalone" == true ]]; then
+  exit "$_audit_exit"
 fi
 
 # ----------------------------
