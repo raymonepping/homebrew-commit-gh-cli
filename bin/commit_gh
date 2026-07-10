@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.3"
+VERSION="2.0.4"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -109,9 +109,11 @@ usage() {
     "  ${BOLD}--secret-scanning${RESET}           Enable GitHub secret scanning + push protection on remote" \
     "" \
     "  ${DIM}--init-repo and --harden both install:${RESET}" \
+    "    ${DIM}·${RESET} ${CYAN}.gitignore${RESET}               Strong defaults (secrets, OS, editor, build)" \
+    "    ${DIM}·${RESET} ${CYAN}.env.example${RESET}             Template — commit this, never .env" \
     "    ${DIM}·${RESET} ${CYAN}.gitleaks.toml${RESET}           Gitleaks config (allowlist CHANGELOG, etc.)" \
-    "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}    Blocks commits containing secrets" \
-    "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}  CI scan on every push/PR" \
+    "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}    Blocks sensitive filenames + secret content" \
+    "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}  CI scan (SHA-pinned, permissions: read-all)" \
     "" \
     "${BOLD}${GREEN}Existing options:${RESET}" \
     "  ${BOLD}--quiet${RESET}, ${BOLD}-q${RESET}                 Suppress most output" \
@@ -222,6 +224,114 @@ in_git_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 # ----------------------------
 gitleaks_available() { command -v gitleaks >/dev/null 2>&1; }
 
+write_gitignore() {
+  local gi_path=".gitignore"
+  if [[ -f "$gi_path" ]]; then
+    msg "✅ .gitignore already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing .gitignore..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write .gitignore (secrets, OS, editor, build patterns)"
+    return 0
+  fi
+  cat >"$gi_path" <<'EOF'
+# ── Secrets & credentials ──────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.der
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ── Editor ────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.orig
+
+# ── Build artifacts ───────────────────────────────────────────
+dist/
+build/
+out/
+*.o
+*.a
+*.so
+*.dylib
+
+# ── Dependencies ──────────────────────────────────────────────
+node_modules/
+vendor/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Logs & temp ───────────────────────────────────────────────
+*.log
+logs/
+tmp/
+temp/
+.tmp/
+
+# ── Coverage & test output ────────────────────────────────────
+.coverage
+coverage/
+htmlcov/
+.pytest_cache/
+*.lcov
+EOF
+  msg "✅ .gitignore created."
+}
+
+write_env_example() {
+  if [[ -f ".env.example" ]]; then
+    msg "✅ .env.example already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing .env.example..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write .env.example"
+    return 0
+  fi
+  cat >".env.example" <<'EOF'
+# Copy this file to .env and fill in your values.
+# NEVER commit .env — it is listed in .gitignore.
+
+# Example:
+# DATABASE_URL=postgres://user:password@localhost:5432/mydb
+# API_KEY=your_api_key_here
+# SECRET_TOKEN=your_secret_here
+EOF
+  msg "✅ .env.example created."
+}
+
 write_gitleaks_toml() {
   local toml_path=".gitleaks.toml"
   if [[ -f "$toml_path" ]]; then
@@ -265,6 +375,18 @@ install_pre_commit_hook() {
   mkdir -p .git/hooks
   cat >.git/hooks/pre-commit <<'EOF'
 #!/usr/bin/env bash
+# Block sensitive filenames from being staged
+BLOCKED_PATTERN='\.(env|pem|key|p12|pfx|cer|crt|der)$|^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$|_(rsa|dsa|ecdsa|ed25519)$'
+STAGED_FILES=$(git diff --cached --name-only 2>/dev/null)
+BLOCKED=$(echo "$STAGED_FILES" | grep -E "$BLOCKED_PATTERN" | grep -v '\.env\.example$' | grep -v '\.env\.sample$' || true)
+if [[ -n "$BLOCKED" ]]; then
+  echo "❌ Commit blocked: sensitive file(s) staged:"
+  echo "$BLOCKED" | sed 's/^/   /'
+  echo "   Remove them with: git restore --staged <file>"
+  exit 1
+fi
+
+# Gitleaks secret scan on staged content
 if command -v gitleaks &>/dev/null; then
   if ! gitleaks protect --staged --redact 2>&1; then
     echo "❌ Gitleaks detected secrets in staged files. Commit blocked."
@@ -297,15 +419,20 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+permissions:
+  read-all
 jobs:
   gitleaks:
     name: Detect secrets
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 EOF
@@ -378,6 +505,8 @@ run_gitleaks_scan() {
 }
 
 setup_security_files() {
+  write_gitignore
+  write_env_example
   write_gitleaks_toml
   install_pre_commit_hook
   write_github_actions_workflow
@@ -424,9 +553,33 @@ run_audit() {
 
   # GitHub Actions workflow
   if [[ -f ".github/workflows/gitleaks.yml" ]]; then
-    always_msg "  ${GREEN}✅${RESET}  .github/workflows/gitleaks.yml   present"
+    if grep -q "permissions:" ".github/workflows/gitleaks.yml" 2>/dev/null; then
+      always_msg "  ${GREEN}✅${RESET}  .github/workflows/gitleaks.yml   present (permissions set)"
+    else
+      always_msg "  ${YELLOW}⚠️${RESET}   .github/workflows/gitleaks.yml   present but missing permissions: block  ${DIM}→ commit_gh --harden regenerates${RESET}"
+      issues=$((issues + 1))
+    fi
   else
     always_msg "  ${RED}❌${RESET}  .github/workflows/gitleaks.yml   missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # .gitignore with .env coverage
+  if [[ -f ".gitignore" ]] && grep -qE '^\.env$|^\.env\b' ".gitignore" 2>/dev/null; then
+    always_msg "  ${GREEN}✅${RESET}  .gitignore                       present (.env covered)"
+  elif [[ -f ".gitignore" ]]; then
+    always_msg "  ${YELLOW}⚠️${RESET}   .gitignore                       present but .env not listed  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  else
+    always_msg "  ${RED}❌${RESET}  .gitignore                       missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # .env.example
+  if [[ -f ".env.example" ]] || [[ -f ".env.sample" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .env.example                     present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .env.example                     missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
   fi
 
