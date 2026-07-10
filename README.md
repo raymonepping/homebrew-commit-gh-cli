@@ -145,6 +145,8 @@ Flags that share a category can be combined freely. Destructive flags (`--rollba
 | ---- | ----------- |
 | `--branch <name>` | Branch to commit and push to. Default: current branch, falling back to `main`. |
 | `--message "<text>"` | Override the auto-generated commit message. |
+| `--pr` | Create a pull request after commit and push. Targets the repo's default branch. |
+| `--draft` | Open the PR as a draft — use with `--pr`. |
 | `--dry-run` | Print every action without making changes. Works with all flags. |
 | `--quiet` / `-q` | Suppress informational output. Errors always print. |
 | `--tree [true\|false]` | Regenerate the folder tree with `folder_tree` before committing. |
@@ -208,6 +210,12 @@ Most flags compose. Run them left-to-right in a single invocation:
 # Full new-repo setup in one command
 commit_gh --init-repo --init-remote --public \
           --secret-scanning --protect --sign --labels
+
+# Commit on a feature branch and open a PR
+commit_gh --branch feature/auth --message "feat: add OAuth login" --pr
+
+# Same, but open as a draft PR first
+commit_gh --branch feature/auth --message "feat: add OAuth login" --pr --draft
 
 # Harden, verify, and set up labels
 commit_gh --harden --audit --labels

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.5.1"
+VERSION="2.6.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -80,6 +80,10 @@ CHANGELOG_PREVIEW_BUMP=""   # --changelog [patch|minor|major|x.y.z]: preview nex
 MILESTONE_BUMP=""           # --milestone [patch|minor|major|x.y.z]: create GitHub milestone
 CONTRIBUTORS_MODE=false     # --contributors: generate/update CONTRIBUTORS.md from git history
 
+# v2.6 flags
+PR_MODE=false               # --pr: create a pull request after commit+push
+PR_DRAFT=false              # --draft: open the PR as a draft (use with --pr)
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -139,6 +143,8 @@ usage() {
     "  ${BOLD}${GREEN}Commit${RESET}" \
     "  ${BOLD}--branch${RESET} ${YELLOW}<name>${RESET}           Branch for commit and push  ${DIM}(default: current, else main)${RESET}" \
     "  ${BOLD}--message${RESET} ${YELLOW}\"<text>\"${RESET}        Override commit message" \
+    "  ${BOLD}--pr${RESET}                     Create a pull request after commit and push" \
+    "  ${BOLD}--draft${RESET}                  Open the PR as a draft  ${DIM}(use with --pr)${RESET}" \
     "  ${BOLD}--dry-run${RESET}                Show what would happen without making changes" \
     "  ${BOLD}--quiet${RESET}, ${BOLD}-q${RESET}               Suppress most output" \
     "  ${BOLD}--tree${RESET} ${YELLOW}[true|false]${RESET}       Regenerate folder tree before committing" \
@@ -179,6 +185,8 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --changelog minor" \
     "  ${CYAN}commit_gh${RESET} --milestone" \
     "  ${CYAN}commit_gh${RESET} --contributors" \
+    "  ${CYAN}commit_gh${RESET} --branch feature/auth --message \"feat: add OAuth login\" --pr" \
+    "  ${CYAN}commit_gh${RESET} --pr --draft" \
     "" \
     "  $sep" \
     "  ${DIM}Full documentation:  man commit_gh${RESET}" \
@@ -242,6 +250,8 @@ while [[ $# -gt 0 ]]; do
     fi
     ;;
   --contributors) CONTRIBUTORS_MODE=true ;;
+  --pr) PR_MODE=true ;;
+  --draft) PR_DRAFT=true ;;
   --force) RELEASE_FORCE=true ;;
   --no-release) RELEASE_NO_RELEASE=true ;;
   --generate-notes) RELEASE_GENERATE_NOTES=true ;;
@@ -2160,6 +2170,67 @@ setup_labels() {
   always_msg ""
 }
 
+create_pr() {
+  local head_branch="$1"
+  local pr_title="${2:-}"
+
+  command -v gh >/dev/null 2>&1 || die "gh CLI not found. Install with: brew install gh"
+  has_origin_remote || die "No origin remote found. Run --init-remote first."
+
+  local base_branch
+  base_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")"
+
+  if [[ "$head_branch" == "$base_branch" ]]; then
+    die "Cannot create a PR from '${head_branch}' into itself. Use --branch <feature> to specify a feature branch."
+  fi
+
+  [[ -z "$pr_title" ]] && \
+    pr_title="$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "PR from ${head_branch}")"
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  local draft_label=""
+  [[ "$PR_DRAFT" == true ]] && draft_label="  ${DIM}(draft)${RESET}"
+
+  always_msg ""
+  always_msg "${BOLD}🔀 commit_gh pull request${RESET}"
+  always_msg "$sep"
+  always_msg "  ${BOLD}${head_branch}${RESET}  →  ${BOLD}${base_branch}${RESET}${draft_label}"
+  always_msg "  Title: ${BOLD}${pr_title}${RESET}"
+  always_msg ""
+
+  if [[ "$DRY_RUN" == true ]]; then
+    local _draft_flag=""
+    [[ "$PR_DRAFT" == true ]] && _draft_flag=" --draft"
+    msg "  DRY RUN: gh pr create --base \"$base_branch\" --head \"$head_branch\" --title \"$pr_title\" --fill${_draft_flag}"
+    always_msg "$sep"
+    always_msg "  ${DIM}DRY RUN: no PR created${RESET}"
+    always_msg ""
+    return 0
+  fi
+
+  local _pr_args=(--base "$base_branch" --head "$head_branch" --title "$pr_title" --fill)
+  [[ "$PR_DRAFT" == true ]] && _pr_args+=(--draft)
+
+  local pr_url
+  if pr_url="$(gh pr create "${_pr_args[@]}" 2>/dev/null)"; then
+    always_msg "  ${GREEN}✅${RESET}  PR created${draft_label}"
+    always_msg "  ${DIM}${pr_url}${RESET}"
+  else
+    local existing
+    existing="$(gh pr view --json url --jq '.url' 2>/dev/null || true)"
+    if [[ -n "$existing" ]]; then
+      always_msg "  ${YELLOW}⚠️${RESET}  PR already exists"
+      always_msg "  ${DIM}${existing}${RESET}"
+    else
+      always_msg "  ${RED}❌${RESET}  PR creation failed  ${DIM}(is the branch pushed? run: gh auth status)${RESET}"
+    fi
+  fi
+
+  always_msg ""
+  always_msg "$sep"
+  always_msg ""
+}
+
 preview_changelog() {
   local bump="${1:-patch}"
   in_git_repo || die "Not inside a git repository."
@@ -2479,6 +2550,12 @@ if [[ "$RELEASE_FORCE" == true && -z "$RELEASE_BUMP" ]]; then
   exit 1
 fi
 
+if [[ "$PR_DRAFT" == true && "$PR_MODE" != true ]]; then
+  always_msg "⚠️  --draft is a modifier for --pr and has no effect on its own."
+  always_msg "   Usage: ${CYAN}commit_gh --pr --draft${RESET}"
+  exit 1
+fi
+
 # ----------------------------
 # Start
 # ----------------------------
@@ -2746,6 +2823,11 @@ try_push() {
   die "Push failed after retry. Resolve manually."
 }
 try_push
+
+if [[ "$PR_MODE" == true ]]; then
+  _pr_title="${COMMIT_MESSAGE_OVERRIDE:-}"
+  create_pr "$branch" "$_pr_title"
+fi
 
 # Verification layer
 if [[ "$VERIFY_MODE" == true ]]; then

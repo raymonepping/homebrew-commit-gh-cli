@@ -32,6 +32,7 @@ _commit_gh() {
     --harden --audit --scan --no-scan --no-hook --secret-scanning
     --protect --doctor --rollback --sign --labels
     --changelog --milestone --contributors
+    --pr --draft
     --release --force --no-release --generate-notes
     --read-version-only --version-file
     --branch --message --tree

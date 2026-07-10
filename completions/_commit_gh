@@ -28,6 +28,8 @@ _commit_gh() {
     \
     '--branch=[branch to use for commit and push]:branch:__git_branch_names' \
     '--message=[override the default commit message]:message' \
+    '--pr[create a pull request after commit and push]' \
+    '--draft[open the PR as a draft — use with --pr]' \
     '--tree=[regenerate folder tree before committing]:enable:(true false)' \
     \
     '--protect[set branch protection on remote (1 review required, no force-push)]' \

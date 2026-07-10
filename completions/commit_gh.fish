@@ -38,6 +38,8 @@ complete -c commit_gh -l version-file       -d 'Version file for --release (defa
 complete -c commit_gh -l branch             -d 'Branch for commit and push' \
   -r -a '(git branch --format="%(refname:short)" 2>/dev/null)'
 complete -c commit_gh -l message            -d 'Override the default commit message' -r
+complete -c commit_gh -l pr                 -d 'Create a pull request after commit and push'
+complete -c commit_gh -l draft              -d 'Open the PR as a draft (use with --pr)'
 complete -c commit_gh -l tree               -d 'Regenerate folder tree before committing' \
   -r -a 'true false'
 

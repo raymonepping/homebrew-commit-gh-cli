@@ -1,4 +1,4 @@
-.TH COMMIT_GH 1 "July 2026" "commit_gh 2.5.0" "User Commands"
+.TH COMMIT_GH 1 "July 2026" "commit_gh 2.6.0" "User Commands"
 .SH NAME
 commit_gh \- secure git commits, releases, and repository hardening
 .SH SYNOPSIS
@@ -131,6 +131,18 @@ back to \fImain\fR if HEAD has no commits yet.
 .BR \-\-message " " \fI"text"\fR
 Override the auto\-generated commit message.
 Default: \fIDD/MM/YYYY \- Updated configuration and fixed bugs\fR.
+.TP
+.B \-\-pr
+Create a GitHub pull request after the commit is pushed.
+The PR targets the repository's default branch (detected via \fBgh repo view\fR).
+The PR title is taken from \fB\-\-message\fR if supplied, otherwise from the last
+commit subject.
+Cannot be used when the current branch equals the default branch \(em use
+\fB\-\-branch\fR to specify a feature branch in that case.
+.TP
+.B \-\-draft
+Open the pull request as a draft.
+Must be used together with \fB\-\-pr\fR.
 .TP
 .B \-\-dry\-run
 Print every action that would be taken without modifying any files or
