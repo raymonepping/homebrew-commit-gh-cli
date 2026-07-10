@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.23"
+VERSION="2.0.24"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -227,6 +227,17 @@ in_git_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 gitleaks_available() { command -v gitleaks >/dev/null 2>&1; }
 
 COMMIT_BLOCKED_PATTERN='\.(env|pem|key|p12|pfx|cer|crt|der|vault)$|^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$|_(rsa|dsa|ecdsa|ed25519)$|^\.vault\.'
+
+unstage_gitignored_files() {
+  local ignored
+  ignored="$(git ls-files --cached --ignored --exclude-standard 2>/dev/null || true)"
+  [[ -z "$ignored" ]] && return 0
+  msg "⚠️ Removing gitignored files from staging area (already indexed, now excluded):"
+  while IFS= read -r f; do
+    msg "   🗑️ $f"
+    git rm --cached "$f" >/dev/null 2>&1 || true
+  done <<< "$ignored"
+}
 
 unstage_blocked_files() {
   local blocked
@@ -1757,6 +1768,11 @@ if [[ "$DRY_RUN" == true ]]; then
   msg "DRY RUN: git add ."
 else
   git add . >/dev/null
+fi
+
+# Remove any gitignored files that were already in the index before .gitignore was updated
+if [[ "$DRY_RUN" != true ]]; then
+  unstage_gitignored_files
 fi
 
 # Auto-unstage sensitive filenames before secret scan
