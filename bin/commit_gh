@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.21"
+VERSION="2.0.22"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -381,8 +381,9 @@ __pycache__/
 *.pyd
 .Python
 
-# ── Logs & temp ───────────────────────────────────────────────
+# ── Logs & generated output ───────────────────────────────────
 *.log
+*.jsonl
 logs/
 tmp/
 temp/
