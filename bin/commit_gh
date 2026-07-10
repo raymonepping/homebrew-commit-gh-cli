@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.1"
+VERSION="2.0.2"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -57,6 +57,8 @@ SCAN_MODE=false         # --scan: run standalone gitleaks scan and exit
 NO_SCAN=false           # --no-scan: skip auto staged scan before commit
 NO_HOOK=false           # --no-hook: skip pre-commit hook installation during --init-repo
 ENABLE_SECRET_SCANNING=false  # --secret-scanning: enable GitHub secret scanning on remote
+AUDIT_MODE=false        # --audit: check which guardrails are present/missing
+HARDEN_MODE=false       # --harden: install missing guardrails in existing repo
 
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
@@ -89,12 +91,14 @@ usage() {
     "  ${BOLD}--dry-run${RESET}                   Show what would happen without making changes" \
     "" \
     "${BOLD}${RED}Security (v2.0):${RESET}" \
+    "  ${BOLD}--audit${RESET}                     Check which security guardrails are present/missing" \
+    "  ${BOLD}--harden${RESET}                    Install missing guardrails in an existing repo" \
     "  ${BOLD}--scan${RESET}                      Run Gitleaks secret scan on full working tree and exit" \
     "  ${BOLD}--no-scan${RESET}                   Skip automatic Gitleaks staged scan before commit" \
     "  ${BOLD}--no-hook${RESET}                   Skip pre-commit hook installation during --init-repo" \
     "  ${BOLD}--secret-scanning${RESET}           Enable GitHub secret scanning + push protection on remote" \
     "" \
-    "  ${DIM}--init-repo also installs:${RESET}" \
+    "  ${DIM}--init-repo and --harden both install:${RESET}" \
     "    ${DIM}·${RESET} ${CYAN}.gitleaks.toml${RESET}           Gitleaks config (allowlist CHANGELOG, etc.)" \
     "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}    Blocks commits containing secrets" \
     "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}  CI scan on every push/PR" \
@@ -136,6 +140,8 @@ while [[ $# -gt 0 ]]; do
   --init-repo) INIT_REPO=true ;;
   --init-remote) INIT_REMOTE=true ;;
   --public) REMOTE_VISIBILITY="public" ;;
+  --audit) AUDIT_MODE=true ;;
+  --harden) HARDEN_MODE=true ;;
   --scan) SCAN_MODE=true ;;
   --no-scan) NO_SCAN=true ;;
   --no-hook) NO_HOOK=true ;;
@@ -355,6 +361,64 @@ setup_security_files() {
   write_gitleaks_toml
   install_pre_commit_hook
   write_github_actions_workflow
+}
+
+run_audit() {
+  local repo_name issues=0
+
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  repo_name="$(basename "$(pwd)")"
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  always_msg "${BOLD}🔍 Security audit:${RESET} ${CYAN}${repo_name}${RESET}"
+  always_msg "$sep"
+
+  # gitleaks binary
+  if gitleaks_available; then
+    always_msg "  ${GREEN}✅${RESET}  gitleaks binary          $(command -v gitleaks)"
+  else
+    always_msg "  ${RED}❌${RESET}  gitleaks binary          not installed  ${DIM}→ brew install gitleaks${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # .gitleaks.toml
+  if [[ -f ".gitleaks.toml" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .gitleaks.toml           present"
+  else
+    always_msg "  ${RED}❌${RESET}  .gitleaks.toml           missing        ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # pre-commit hook
+  if [[ -f ".git/hooks/pre-commit" ]] && grep -q "gitleaks" ".git/hooks/pre-commit" 2>/dev/null; then
+    always_msg "  ${GREEN}✅${RESET}  .git/hooks/pre-commit    gitleaks hook present"
+  elif [[ -f ".git/hooks/pre-commit" ]]; then
+    always_msg "  ${YELLOW}⚠️${RESET}   .git/hooks/pre-commit    exists but no gitleaks call  ${DIM}→ commit_gh --harden --no-hook skips; edit manually${RESET}"
+    issues=$((issues + 1))
+  else
+    always_msg "  ${RED}❌${RESET}  .git/hooks/pre-commit    missing        ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # GitHub Actions workflow
+  if [[ -f ".github/workflows/gitleaks.yml" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/workflows/gitleaks.yml   present"
+  else
+    always_msg "  ${RED}❌${RESET}  .github/workflows/gitleaks.yml   missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  always_msg "$sep"
+  if [[ $issues -eq 0 ]]; then
+    always_msg "  ${GREEN}${BOLD}All guardrails in place.${RESET} 🔒"
+  else
+    always_msg "  ${YELLOW}${BOLD}${issues} guardrail(s) missing.${RESET}  Run: ${CYAN}commit_gh --harden${RESET}"
+  fi
+  always_msg ""
+
+  [[ $issues -eq 0 ]]  # exit 0 = clean, exit 1 = issues found
 }
 
 # ----------------------------
@@ -598,8 +662,22 @@ create_github_release() {
 }
 
 # ----------------------------
-# Standalone --scan mode (exits immediately after scan)
+# Standalone modes (audit / harden / scan — all exit after running)
 # ----------------------------
+if [[ "$AUDIT_MODE" == true ]]; then
+  run_audit
+  exit $?
+fi
+
+if [[ "$HARDEN_MODE" == true ]]; then
+  in_git_repo || die "Not inside a git repository. --harden requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  msg "🛡️ Hardening repo: $(basename "$(pwd)")"
+  setup_security_files
+  always_msg "🎉 Done. Run ${CYAN}commit_gh --audit${RESET} to verify."
+  exit 0
+fi
+
 if [[ "$SCAN_MODE" == true ]]; then
   if ! gitleaks_available; then
     die "gitleaks not found. Install with: brew install gitleaks"
