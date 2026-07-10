@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.25"
+VERSION="2.0.26"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -964,6 +964,38 @@ EOF
   msg "✅ $checklist created."
 }
 
+enable_dependabot_alerts() {
+  command -v gh >/dev/null 2>&1 || {
+    msg "⚠️ gh not found. Skipping Dependabot alerts enablement."
+    return 0
+  }
+  has_origin_remote || {
+    msg "⚠️ No origin remote. Skipping Dependabot alerts enablement."
+    return 0
+  }
+
+  local remote_url repo_slug
+  remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+  repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+
+  if [[ -z "$repo_slug" || "$repo_slug" == "$remote_url" ]]; then
+    msg "⚠️ Could not determine GitHub repo slug. Skipping Dependabot alerts."
+    return 0
+  fi
+
+  msg "🔔 Enabling Dependabot vulnerability alerts on $repo_slug..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: gh api PUT /repos/$repo_slug/vulnerability-alerts"
+    return 0
+  fi
+
+  if gh api --method PUT "/repos/$repo_slug/vulnerability-alerts" >/dev/null 2>&1; then
+    msg "✅ Dependabot alerts enabled."
+  else
+    msg "⚠️ Could not enable Dependabot alerts (requires admin access). Skipping."
+  fi
+}
+
 enable_github_secret_scanning() {
   command -v gh >/dev/null 2>&1 || {
     msg "⚠️ gh not found. Skipping secret scanning enablement."
@@ -1607,8 +1639,9 @@ fi
 
 ensure_origin_remote || true
 
-# Enable GitHub secret scanning if requested (after remote exists)
+# Enable GitHub security features if requested (after remote exists)
 if [[ "$ENABLE_SECRET_SCANNING" == true ]]; then
+  enable_dependabot_alerts
   enable_github_secret_scanning
 fi
 
