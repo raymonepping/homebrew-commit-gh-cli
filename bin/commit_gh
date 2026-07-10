@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.6.0"
+VERSION="2.6.1"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -2181,7 +2181,7 @@ create_pr() {
   base_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")"
 
   if [[ "$head_branch" == "$base_branch" ]]; then
-    die "Cannot create a PR from '${head_branch}' into itself. Use --branch <feature> to specify a feature branch."
+    die "Cannot create a PR from '${head_branch}' into itself. Use --branch <feature> to specify a feature branch or use --message to auto-derive one."
   fi
 
   [[ -z "$pr_title" ]] && \
@@ -2593,6 +2593,31 @@ else
   MM=$(date +'%m')
   YYYY=$(date +'%Y')
   COMMIT_MESSAGE="$DD/$MM/$YYYY - Updated configuration and fixed bugs"
+fi
+
+# --pr on the default branch with no explicit --branch: auto-create a feature branch
+if [[ "$PR_MODE" == true && -z "$RELEASE_BUMP" && -z "$BRANCH" ]]; then
+  _pr_default="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo "main")"
+  if [[ "$branch" == "$_pr_default" ]]; then
+    if [[ -n "$COMMIT_MESSAGE_OVERRIDE" ]]; then
+      _pr_slug="${COMMIT_MESSAGE_OVERRIDE#*: }"   # strip conventional-commit prefix
+    else
+      _pr_slug="update-$(date +%Y%m%d)"
+    fi
+    _auto_branch="feature/$(echo "$_pr_slug" \
+      | tr '[:upper:]' '[:lower:]' \
+      | tr -cs 'a-z0-9' '-' \
+      | sed -E 's/-+/-/g;s/^-//;s/-$//' \
+      | cut -c1-50)"
+    msg "🌿 --pr on ${_pr_default}: auto-creating branch ${CYAN}${_auto_branch}${RESET}"
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: git checkout -b \"$_auto_branch\""
+    else
+      git checkout -b "$_auto_branch" >/dev/null 2>&1 \
+        || die "Branch '$_auto_branch' already exists. Check it out first or use --branch <name>."
+    fi
+    branch="$_auto_branch"
+  fi
 fi
 
 # ----------------------------
