@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "global allowlist"
+paths = [
+  "CHANGELOG.md",
+  ".gitleaks.toml",
+]
