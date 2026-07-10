@@ -1,10 +1,10 @@
 class CommitGhCli < Formula
   desc "CLI toolkit for visualizing folder structures with markdown reports"
   homepage "https://github.com/raymonepping/commit_gh_cli"
-  url "https://github.com/raymonepping/homebrew-commit-gh-cli/archive/refs/tags/v2.0.13.tar.gz"
-  sha256 "61b6e843671b32dd3249eba5257e931d1b3088c2c7d39fe0b7657095c77dffae"
+  url "https://github.com/raymonepping/homebrew-commit-gh-cli/archive/refs/tags/v2.0.14.tar.gz"
+  sha256 "b5eb327cad565145a275dec5060563546940264617d33c7691c4b67926ac3640"
   license "MIT"
-  version "2.0.13"
+  version "2.0.14"
 
   depends_on "bash"
 
