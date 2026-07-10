@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.9"
+VERSION="2.0.10"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -770,6 +770,70 @@ EOF
   msg "✅ $co_file created (owner: @${gh_user})."
 }
 
+write_editorconfig() {
+  if [[ -f ".editorconfig" ]]; then
+    msg "✅ .editorconfig already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing .editorconfig..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write .editorconfig"
+    return 0
+  fi
+  cat >".editorconfig" <<'EOF'
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+EOF
+  msg "✅ .editorconfig created."
+}
+
+write_release_checklist() {
+  local checklist="docs/release-checklist.md"
+  if [[ -f "$checklist" ]]; then
+    msg "✅ $checklist already exists. Skipping."
+    return 0
+  fi
+  msg "📋 Writing $checklist..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $checklist"
+    return 0
+  fi
+  mkdir -p docs
+  cat >"$checklist" <<'EOF'
+# Release checklist
+
+## Before tagging
+
+- [ ] All changes merged to `main`
+- [ ] CHANGELOG.md updated — move items from `[Unreleased]` to a new version section
+- [ ] Version bump decided (patch / minor / major)
+
+## Tag and release
+
+- [ ] Run `commit_gh --release <patch|minor|major>` (or `--release x.y.z` for explicit version)
+- [ ] Confirm GitHub release created and release workflow passed in Actions
+
+## After release
+
+- [ ] Announce if applicable
+- [ ] Open a fresh `[Unreleased]` section in CHANGELOG.md
+EOF
+  msg "✅ $checklist created."
+}
+
 enable_github_secret_scanning() {
   command -v gh >/dev/null 2>&1 || {
     msg "⚠️ gh not found. Skipping secret scanning enablement."
@@ -850,6 +914,8 @@ setup_security_files() {
   write_issue_templates
   write_pr_template
   write_codeowners
+  write_editorconfig
+  write_release_checklist
 }
 
 run_audit() {
@@ -992,6 +1058,22 @@ run_audit() {
     always_msg "  ${GREEN}✅${RESET}  .github/CODEOWNERS               present"
   else
     always_msg "  ${YELLOW}⚠️${RESET}   .github/CODEOWNERS               missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # .editorconfig
+  if [[ -f ".editorconfig" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .editorconfig                    present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .editorconfig                    missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # release checklist
+  if [[ -f "docs/release-checklist.md" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  docs/release-checklist.md        present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   docs/release-checklist.md        missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
   fi
 
