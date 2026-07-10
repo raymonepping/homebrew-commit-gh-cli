@@ -30,6 +30,8 @@ _commit_gh() {
     '--message=[override the default commit message]:message' \
     '--tree=[regenerate folder tree before committing]:enable:(true false)' \
     \
+    '--protect[set branch protection on remote (1 review required, no force-push)]' \
+    '--doctor[check developer environment — bash, git, gitleaks, gh, SSH]' \
     '--bump=[create a new git tag from the latest tag]:bump type:(patch minor major)' \
     '--preview[preview next --bump tag without creating it]' \
     '--verify[run verification checks (clean tree, branch, version)]'

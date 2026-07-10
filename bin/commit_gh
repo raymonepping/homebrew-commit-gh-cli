@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.1.0"
+VERSION="2.3.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -65,6 +65,10 @@ RELEASE_FORCE=false         # --force: overwrite existing tag + GitHub release
 RELEASE_NO_RELEASE=false    # --no-release: tag+push only, skip GitHub release
 RELEASE_GENERATE_NOTES=false # --generate-notes: auto-generate release notes via gh
 READ_VERSION_ONLY=false     # --read-version-only: print version inventory and exit
+
+# v2.2 flags
+PROTECT_MODE=false          # --protect: set branch protection rules on remote
+DOCTOR_MODE=false           # --doctor: check developer environment
 
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
@@ -130,6 +134,8 @@ usage() {
     "  ${BOLD}--tree${RESET} ${YELLOW}[true|false]${RESET}       Regenerate folder tree before committing" \
     "" \
     "  ${BOLD}Utilities${RESET}" \
+    "  ${BOLD}--protect${RESET}                Set branch protection on remote  ${DIM}(1 review required, no force-push)${RESET}" \
+    "  ${BOLD}--doctor${RESET}                 Check developer environment  ${DIM}(bash, git, gitleaks, gh, SSH)${RESET}" \
     "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}  Create a git tag from latest tag  ${DIM}(no file changes)${RESET}" \
     "  ${BOLD}--preview${RESET}                Preview next --bump tag without creating it" \
     "  ${BOLD}--verify${RESET}                 Run verification checks (clean tree, branch, version)" \
@@ -139,8 +145,9 @@ usage() {
     "  $sep" \
     "" \
     "  ${BOLD}${BLUE}Examples${RESET}" \
-    "  ${CYAN}commit_gh${RESET} --init-repo --init-remote --public --secret-scanning" \
+    "  ${CYAN}commit_gh${RESET} --init-repo --init-remote --public --secret-scanning --protect" \
     "  ${CYAN}commit_gh${RESET} --harden --audit" \
+    "  ${CYAN}commit_gh${RESET} --doctor" \
     "  ${CYAN}commit_gh${RESET}" \
     "  ${CYAN}commit_gh${RESET} --message \"feat: add login endpoint\"" \
     "  ${CYAN}commit_gh${RESET} --release patch" \
@@ -181,6 +188,8 @@ while [[ $# -gt 0 ]]; do
   --no-scan) NO_SCAN=true ;;
   --no-hook) NO_HOOK=true ;;
   --secret-scanning) ENABLE_SECRET_SCANNING=true ;;
+  --protect) PROTECT_MODE=true ;;
+  --doctor)  DOCTOR_MODE=true ;;
   --force) RELEASE_FORCE=true ;;
   --no-release) RELEASE_NO_RELEASE=true ;;
   --generate-notes) RELEASE_GENERATE_NOTES=true ;;
@@ -982,6 +991,83 @@ EOF
   msg "✅ $checklist created."
 }
 
+populate_changelog() {
+  local new_version="$1"
+  [[ -f "CHANGELOG.md" ]] || return 0
+  grep -q '## \[Unreleased\]' CHANGELOG.md || return 0
+
+  local date_str prev_tag log_range
+  date_str="$(date +%Y-%m-%d)"
+  prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 2>/dev/null || true)"
+  [[ -n "$prev_tag" ]] && log_range="${prev_tag}..HEAD" || log_range="HEAD"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: populate CHANGELOG.md with v${new_version} entries from git log"
+    return 0
+  fi
+
+  # ── Collect conventional-commit entries from git log ──────────
+  local -a _added _fixed _changed _security
+  while IFS= read -r _subj; do
+    [[ -z "$_subj" ]] && continue
+    [[ "$_subj" =~ ^Merge[[:space:]] ]] && continue
+    [[ "$_subj" =~ ^chore:[[:space:]]release ]] && continue
+    case "$_subj" in
+      feat:*|feat\(*\):*)     _added+=("${_subj#*: }") ;;
+      fix:*|fix\(*\):*)       _fixed+=("${_subj#*: }") ;;
+      security:*)             _security+=("${_subj#*: }") ;;
+      chore:*|refactor:*|perf:*|build:*|ci:*|docs:*)
+                              _changed+=("${_subj#*: }") ;;
+    esac
+  done < <(git log --pretty=format:"%s" $log_range 2>/dev/null || true)
+
+  [[ ${#_added[@]} -eq 0 && ${#_fixed[@]} -eq 0 && \
+     ${#_changed[@]} -eq 0 && ${#_security[@]} -eq 0 ]] && return 0
+
+  # ── Build the new version section ─────────────────────────────
+  local _section _out
+  _section="$(mktemp)"
+  _out="$(mktemp)"
+
+  {
+    printf '## [%s] - %s\n' "$new_version" "$date_str"
+    [[ ${#_added[@]} -gt 0 ]]    && { printf '\n### Added\n\n';    printf '- %s\n' "${_added[@]}"; }
+    [[ ${#_fixed[@]} -gt 0 ]]    && { printf '\n### Fixed\n\n';    printf '- %s\n' "${_fixed[@]}"; }
+    [[ ${#_changed[@]} -gt 0 ]]  && { printf '\n### Changed\n\n';  printf '- %s\n' "${_changed[@]}"; }
+    [[ ${#_security[@]} -gt 0 ]] && { printf '\n### Security\n\n'; printf '- %s\n' "${_security[@]}"; }
+  } > "$_section"
+
+  # ── Rewrite CHANGELOG: insert new section after [Unreleased] ──
+  # Existing [Unreleased] content is replaced by the auto-generated block.
+  local _in_ur=false _done=false _line
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    if [[ "$_done" == false && "$_line" == "## [Unreleased]" ]]; then
+      printf '%s\n\n' "$_line" >> "$_out"
+      _in_ur=true
+      continue
+    fi
+    if [[ "$_in_ur" == true ]]; then
+      if [[ "$_line" =~ ^##[[:space:]] ]]; then
+        cat "$_section" >> "$_out"
+        printf '\n%s\n' "$_line" >> "$_out"
+        _in_ur=false
+        _done=true
+      fi
+      continue   # discard old [Unreleased] content (empty headers)
+    fi
+    printf '%s\n' "$_line" >> "$_out"
+  done < CHANGELOG.md
+
+  # [Unreleased] was the last section — append at end
+  if [[ "$_in_ur" == true || "$_done" == false ]]; then
+    cat "$_section" >> "$_out"
+  fi
+
+  rm -f "$_section"
+  mv "$_out" CHANGELOG.md
+  msg "  ${GREEN}✓${RESET} CHANGELOG.md updated for v${new_version}"
+}
+
 enable_dependabot_alerts() {
   command -v gh >/dev/null 2>&1 || {
     msg "⚠️ gh not found. Skipping Dependabot alerts enablement."
@@ -1047,6 +1133,53 @@ enable_github_secret_scanning() {
     msg "✅ GitHub secret scanning and push protection enabled."
   else
     msg "⚠️ Could not enable secret scanning (requires GitHub Advanced Security or public repo). Skipping."
+  fi
+}
+
+enable_branch_protection() {
+  local branch="${1:-main}"
+  command -v gh >/dev/null 2>&1 || {
+    msg "⚠️ gh not found. Skipping branch protection."
+    return 0
+  }
+  has_origin_remote || {
+    msg "⚠️ No origin remote. Skipping branch protection."
+    return 0
+  }
+
+  local remote_url repo_slug
+  remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+  repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+
+  if [[ -z "$repo_slug" || "$repo_slug" == "$remote_url" ]]; then
+    msg "⚠️ Could not determine repo slug. Skipping branch protection."
+    return 0
+  fi
+
+  msg "🛡️ Enabling branch protection on ${repo_slug}:${branch}..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: gh api PUT /repos/$repo_slug/branches/$branch/protection"
+    return 0
+  fi
+
+  if gh api --method PUT "/repos/$repo_slug/branches/$branch/protection" \
+    --input - >/dev/null 2>&1 <<'PROTECTION_JSON'
+{
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+PROTECTION_JSON
+  then
+    msg "✅ Branch protection enabled on ${branch} (1 review required, no force-push, no deletion)."
+  else
+    msg "⚠️ Could not enable branch protection (requires admin access; private repos need GitHub Pro/Team). Skipping."
   fi
 }
 
@@ -1600,6 +1733,94 @@ run_read_version() {
   always_msg ""
 }
 
+run_doctor() {
+  local issues=0
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  always_msg ""
+  always_msg "${BOLD}🩺 commit_gh doctor${RESET}"
+  always_msg "$sep"
+
+  # bash version (needs 4+; macOS ships with 3)
+  local _bash_ver _bash_major
+  _bash_ver="$(bash --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+  _bash_major="${_bash_ver%%.*}"
+  if [[ "${_bash_major:-0}" -ge 4 ]]; then
+    always_msg "  ${GREEN}✅${RESET}  bash                     ${_bash_ver}  ${DIM}($(command -v bash))${RESET}"
+  else
+    always_msg "  ${RED}❌${RESET}  bash                     ${_bash_ver:-unknown}  ${DIM}needs 4+ → brew install bash${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # git
+  if command -v git >/dev/null 2>&1; then
+    local _git_ver
+    _git_ver="$(git --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+    always_msg "  ${GREEN}✅${RESET}  git                      ${_git_ver}  ${DIM}($(command -v git))${RESET}"
+    local _git_name _git_email
+    _git_name="$(git config --global user.name 2>/dev/null || echo "")"
+    _git_email="$(git config --global user.email 2>/dev/null || echo "")"
+    if [[ -n "$_git_name" && -n "$_git_email" ]]; then
+      always_msg "  ${GREEN}✅${RESET}  git user                 ${_git_name} <${_git_email}>"
+    else
+      always_msg "  ${RED}❌${RESET}  git user                 not configured  ${DIM}→ git config --global user.name / user.email${RESET}"
+      issues=$((issues + 1))
+    fi
+  else
+    always_msg "  ${RED}❌${RESET}  git                      not found"
+    issues=$((issues + 1))
+  fi
+
+  # gitleaks
+  if command -v gitleaks >/dev/null 2>&1; then
+    local _gl_ver
+    _gl_ver="$(gitleaks version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || echo "?")"
+    always_msg "  ${GREEN}✅${RESET}  gitleaks                 v${_gl_ver}  ${DIM}($(command -v gitleaks))${RESET}"
+  else
+    always_msg "  ${RED}❌${RESET}  gitleaks                 not installed  ${DIM}→ brew install gitleaks${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # gh CLI + auth
+  if command -v gh >/dev/null 2>&1; then
+    local _gh_ver
+    _gh_ver="$(gh --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+    always_msg "  ${GREEN}✅${RESET}  gh CLI                   v${_gh_ver}  ${DIM}($(command -v gh))${RESET}"
+    local _gh_user
+    _gh_user="$(gh api user --jq '.login' 2>/dev/null || echo "")"
+    if [[ -n "$_gh_user" ]]; then
+      always_msg "  ${GREEN}✅${RESET}  gh auth                  authenticated as ${BOLD}${_gh_user}${RESET}"
+    else
+      always_msg "  ${RED}❌${RESET}  gh auth                  not authenticated  ${DIM}→ gh auth login${RESET}"
+      issues=$((issues + 1))
+    fi
+  else
+    always_msg "  ${RED}❌${RESET}  gh CLI                   not installed  ${DIM}→ brew install gh${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # SSH agent
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+    local _key_count
+    _key_count="$(ssh-add -l 2>/dev/null | grep -c 'SHA256' || true)"
+    if [[ "$_key_count" -gt 0 ]]; then
+      always_msg "  ${GREEN}✅${RESET}  SSH agent                running  ${DIM}(${_key_count} key(s) loaded)${RESET}"
+    else
+      always_msg "  ${YELLOW}⚠️${RESET}   SSH agent                running but no keys loaded  ${DIM}→ ssh-add ~/.ssh/id_ed25519${RESET}"
+    fi
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   SSH agent                not running  ${DIM}→ eval \"\$(ssh-agent -s)\" && ssh-add${RESET}"
+  fi
+
+  always_msg "$sep"
+  if [[ $issues -eq 0 ]]; then
+    always_msg "  ${GREEN}${BOLD}Environment ready.${RESET} 🩺"
+  else
+    always_msg "  ${YELLOW}${BOLD}${issues} issue(s) found.${RESET}  Fix above to use all commit_gh features."
+  fi
+  always_msg ""
+}
+
 # ----------------------------
 # Standalone modes (harden → audit → scan — all exit after running)
 # Run harden before audit so --harden --audit hardens first, then reports.
@@ -1631,6 +1852,18 @@ if [[ "$SCAN_MODE" == true ]]; then
   fi
   run_gitleaks_scan "source"
   always_msg "🎉 Done."
+  exit 0
+fi
+
+if [[ "$PROTECT_MODE" == true ]]; then
+  in_git_repo || die "Not inside a git repository. --protect requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  enable_branch_protection "$(detect_branch)"
+  exit 0
+fi
+
+if [[ "$DOCTOR_MODE" == true ]]; then
+  run_doctor
   exit 0
 fi
 
@@ -1744,7 +1977,7 @@ if [[ -n "$RELEASE_BUMP" ]]; then
     fi
   fi
 
-  # ── 1/4 Update VERSION file ────────────────────────────────────
+  # ── 1/4 Update VERSION file + CHANGELOG ───────────────────────
   msg "${BOLD}── 1/4  Update VERSION file ─────────────────────────────────────${RESET}"
   if [[ "$DRY_RUN" == true ]]; then
     msg "  DRY RUN: echo \"$new_version\" > \"$vf_path\""
@@ -1752,6 +1985,7 @@ if [[ -n "$RELEASE_BUMP" ]]; then
     echo "$new_version" >"$vf_path"
     msg "  ${GREEN}✓${RESET} $VERSION_FILE → $new_version"
   fi
+  populate_changelog "$new_version"
 
   # ── 2/4 Commit ────────────────────────────────────────────────
   msg "${BOLD}── 2/4  Commit ──────────────────────────────────────────────────${RESET}"

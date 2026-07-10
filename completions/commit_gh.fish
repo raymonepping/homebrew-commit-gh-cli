@@ -42,6 +42,8 @@ complete -c commit_gh -l tree               -d 'Regenerate folder tree before co
   -r -a 'true false'
 
 # Utilities
+complete -c commit_gh -l protect            -d 'Set branch protection on remote (1 review required, no force-push)'
+complete -c commit_gh -l doctor             -d 'Check developer environment — bash, git, gitleaks, gh, SSH'
 complete -c commit_gh -l bump               -d 'Create a new git tag from the latest tag' \
   -r -a 'patch minor major'
 complete -c commit_gh -l preview            -d 'Preview next --bump tag without creating it'
