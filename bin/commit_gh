@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.11"
+VERSION="2.0.12"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -403,10 +403,14 @@ write_github_actions_workflow() {
   local workflow_dir=".github/workflows"
   local workflow_file="$workflow_dir/gitleaks.yml"
   if [[ -f "$workflow_file" ]]; then
-    msg "✅ $workflow_file already exists. Skipping."
-    return 0
+    if grep -q "permissions:" "$workflow_file" 2>/dev/null; then
+      msg "✅ $workflow_file already exists. Skipping."
+      return 0
+    fi
+    msg "⚠️ $workflow_file missing permissions: block — regenerating..."
+  else
+    msg "⚙️ Adding GitHub Actions Gitleaks workflow..."
   fi
-  msg "⚙️ Adding GitHub Actions Gitleaks workflow..."
   if [[ "$DRY_RUN" == true ]]; then
     msg "DRY RUN: write $workflow_file (gitleaks-action@v2 on push + PR)"
     return 0
