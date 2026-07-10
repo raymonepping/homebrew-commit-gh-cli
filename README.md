@@ -159,6 +159,8 @@ Flags that share a category can be combined freely. Destructive flags (`--rollba
 | `--changelog [bump]` | Preview what the next CHANGELOG entry would look like without writing anything. Bump type defaults to `patch`. |
 | `--milestone [bump]` | Create a GitHub milestone for the next version. Bump type defaults to `patch`. |
 | `--contributors` | Generate or overwrite `CONTRIBUTORS.md` from `git shortlog`. Regenerated on every run. |
+| `--history` | Show a descending tree of all semver releases with their commits. Unreleased commits since the latest tag appear at the top. |
+| `--json` | Output `--history` as structured JSON (`repo`, `generated`, `releases[]`). Each release carries `tag`, `date`, `bump`, `published`, and `commits[]`. Must be combined with `--history`. |
 | `--doctor` | Check the developer environment: bash version, git config, gitleaks, gh auth, SSH agent. |
 | `--bump patch\|minor\|major` | Create a new annotated git tag from the latest tag. No file changes. |
 | `--preview` | Preview the tag that `--bump` would create without creating it. |
@@ -225,6 +227,12 @@ commit_gh --doctor --sign --labels
 
 # Preview a release without doing anything
 commit_gh --release minor --dry-run
+
+# Show full release and commit history
+commit_gh --history
+
+# Same output as structured JSON (pipe-friendly)
+commit_gh --history --json
 ```
 
 Flags that run exclusively (they exit immediately and cannot be combined):
