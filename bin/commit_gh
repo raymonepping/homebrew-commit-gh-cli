@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.4"
+VERSION="2.0.5"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -439,6 +439,161 @@ EOF
   msg "✅ $workflow_file created."
 }
 
+write_changelog() {
+  if [[ -f "CHANGELOG.md" ]]; then
+    msg "✅ CHANGELOG.md already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing CHANGELOG.md..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write CHANGELOG.md (Keep a Changelog format)"
+    return 0
+  fi
+  cat >"CHANGELOG.md" <<'EOF'
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+EOF
+  msg "✅ CHANGELOG.md created."
+}
+
+write_license() {
+  if [[ -f "LICENSE" ]]; then
+    msg "✅ LICENSE already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing LICENSE (MIT)..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write LICENSE (MIT, current year, git user.name)"
+    return 0
+  fi
+  local year author
+  year="$(date +%Y)"
+  author="$(git config user.name 2>/dev/null || echo "The Authors")"
+  cat >"LICENSE" <<EOF
+MIT License
+
+Copyright (c) ${year} ${author}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+EOF
+  msg "✅ LICENSE created."
+}
+
+write_readme() {
+  if [[ -f "README.md" ]]; then
+    msg "✅ README.md already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing README.md..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write README.md (starter template)"
+    return 0
+  fi
+  local repo_name
+  repo_name="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+  cat >"README.md" <<EOF
+# ${repo_name}
+
+> Short description of what this project does.
+
+## Getting started
+
+\`\`\`bash
+git clone <repo-url>
+cd ${repo_name}
+cp .env.example .env
+\`\`\`
+
+## Usage
+
+<!-- describe usage here -->
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
+EOF
+  msg "✅ README.md created."
+}
+
+write_contributing() {
+  if [[ -f "CONTRIBUTING.md" ]]; then
+    msg "✅ CONTRIBUTING.md already exists. Skipping."
+    return 0
+  fi
+  msg "📄 Writing CONTRIBUTING.md..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write CONTRIBUTING.md"
+    return 0
+  fi
+  cat >"CONTRIBUTING.md" <<'EOF'
+# Contributing
+
+Thank you for considering contributing to this project!
+
+## Workflow
+
+1. Fork the repository and create a feature branch from \`main\`.
+2. Make your changes, following the code style of the project.
+3. Commit using clear, conventional commit messages (\`feat:\`, \`fix:\`, \`chore:\`, etc.).
+4. Open a pull request against \`main\` with a description of what changed and why.
+
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+\`\`\`
+feat: add new feature
+fix: correct a bug
+chore: update dependencies
+docs: improve README
+\`\`\`
+
+## Secrets & security
+
+- Never commit secrets, credentials, or \`.env\` files.
+- The pre-commit hook will block sensitive filenames and run Gitleaks automatically.
+- Report security vulnerabilities privately rather than opening a public issue.
+
+## Code review
+
+All pull requests require at least one approval before merging.
+EOF
+  msg "✅ CONTRIBUTING.md created."
+}
+
 enable_github_secret_scanning() {
   command -v gh >/dev/null 2>&1 || {
     msg "⚠️ gh not found. Skipping secret scanning enablement."
@@ -510,6 +665,10 @@ setup_security_files() {
   write_gitleaks_toml
   install_pre_commit_hook
   write_github_actions_workflow
+  write_changelog
+  write_license
+  write_readme
+  write_contributing
 }
 
 run_audit() {
@@ -580,6 +739,38 @@ run_audit() {
     always_msg "  ${GREEN}✅${RESET}  .env.example                     present"
   else
     always_msg "  ${YELLOW}⚠️${RESET}   .env.example                     missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # CHANGELOG.md
+  if [[ -f "CHANGELOG.md" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  CHANGELOG.md                     present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   CHANGELOG.md                     missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # LICENSE
+  if [[ -f "LICENSE" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  LICENSE                          present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   LICENSE                          missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # README.md
+  if [[ -f "README.md" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  README.md                        present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   README.md                        missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # CONTRIBUTING.md
+  if [[ -f "CONTRIBUTING.md" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  CONTRIBUTING.md                  present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   CONTRIBUTING.md                  missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
   fi
 
