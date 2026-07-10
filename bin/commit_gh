@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="1.8.3"
+VERSION="2.0.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -42,15 +42,21 @@ BUMP_TYPE=""
 PREVIEW_MODE=false
 VERIFY_MODE=false
 
-# New flags
+# v1.x flags
 INIT_REPO=false
 INIT_REMOTE=false
-REMOTE_VISIBILITY="private" # private|public
-RELEASE_BUMP=""             # patch|minor|major (VERSION-file based release)
-VERSION_FILE="VERSION"      # default, override with --version-file
-BRANCH=""                   # default detected or "main"
-COMMIT_MESSAGE_OVERRIDE=""  # optional improvement
-DRY_RUN=false               # optional improvement, safe to keep off by default
+REMOTE_VISIBILITY="private"
+RELEASE_BUMP=""
+VERSION_FILE="VERSION"
+BRANCH=""
+COMMIT_MESSAGE_OVERRIDE=""
+DRY_RUN=false
+
+# v2.0 security flags
+SCAN_MODE=false         # --scan: run standalone gitleaks scan and exit
+NO_SCAN=false           # --no-scan: skip auto staged scan before commit
+NO_HOOK=false           # --no-hook: skip pre-commit hook installation during --init-repo
+ENABLE_SECRET_SCANNING=false  # --secret-scanning: enable GitHub secret scanning on remote
 
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
@@ -82,6 +88,17 @@ usage() {
     "  ${BOLD}--message${RESET} ${YELLOW}\"<msg>\"${RESET}           Override commit message (otherwise timestamp-based)" \
     "  ${BOLD}--dry-run${RESET}                   Show what would happen without making changes" \
     "" \
+    "${BOLD}${RED}Security (v2.0):${RESET}" \
+    "  ${BOLD}--scan${RESET}                      Run Gitleaks secret scan on full working tree and exit" \
+    "  ${BOLD}--no-scan${RESET}                   Skip automatic Gitleaks staged scan before commit" \
+    "  ${BOLD}--no-hook${RESET}                   Skip pre-commit hook installation during --init-repo" \
+    "  ${BOLD}--secret-scanning${RESET}           Enable GitHub secret scanning + push protection on remote" \
+    "" \
+    "  ${DIM}--init-repo also installs:${RESET}" \
+    "    ${DIM}·${RESET} ${CYAN}.gitleaks.toml${RESET}           Gitleaks config (allowlist CHANGELOG, etc.)" \
+    "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}    Blocks commits containing secrets" \
+    "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}  CI scan on every push/PR" \
+    "" \
     "${BOLD}${GREEN}Existing options:${RESET}" \
     "  ${BOLD}--quiet${RESET}, ${BOLD}-q${RESET}                 Suppress most output" \
     "  ${BOLD}--tree${RESET} ${YELLOW}[true|false]${RESET}         Generate folder tree if folder_tree exists" \
@@ -93,6 +110,8 @@ usage() {
     "" \
     "${BOLD}${BLUE}Examples:${RESET}" \
     "  ${CYAN}commit_gh${RESET} --init-repo --init-remote" \
+    "  ${CYAN}commit_gh${RESET} --init-repo --init-remote --public --secret-scanning" \
+    "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --release patch" \
     "  ${CYAN}commit_gh${RESET} --release minor --init-remote --public" \
     "  ${CYAN}commit_gh${RESET} --message \"chore: sync changes\" --tree true" \
@@ -117,6 +136,10 @@ while [[ $# -gt 0 ]]; do
   --init-repo) INIT_REPO=true ;;
   --init-remote) INIT_REMOTE=true ;;
   --public) REMOTE_VISIBILITY="public" ;;
+  --scan) SCAN_MODE=true ;;
+  --no-scan) NO_SCAN=true ;;
+  --no-hook) NO_HOOK=true ;;
+  --secret-scanning) ENABLE_SECRET_SCANNING=true ;;
   --branch)
     [[ -n "${2:-}" ]] || die "--branch requires a value"
     BRANCH="$2"
@@ -168,6 +191,175 @@ done
 # ----------------------------
 in_git_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
+# ----------------------------
+# Security helpers
+# ----------------------------
+gitleaks_available() { command -v gitleaks >/dev/null 2>&1; }
+
+write_gitleaks_toml() {
+  local toml_path=".gitleaks.toml"
+  if [[ -f "$toml_path" ]]; then
+    msg "✅ .gitleaks.toml already exists. Skipping."
+    return 0
+  fi
+  msg "🔒 Writing .gitleaks.toml..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write .gitleaks.toml (useDefault = true, allowlist: CHANGELOG.md)"
+    return 0
+  fi
+  cat >.gitleaks.toml <<'EOF'
+[extend]
+useDefault = true
+
+[allowlist]
+description = "global allowlist"
+paths = [
+  "CHANGELOG.md",
+  ".gitleaks.toml",
+]
+EOF
+  msg "✅ .gitleaks.toml created."
+}
+
+install_pre_commit_hook() {
+  if [[ "$NO_HOOK" == true ]]; then
+    msg "⏭️ Skipping pre-commit hook installation (--no-hook)."
+    return 0
+  fi
+  local hook_path=".git/hooks/pre-commit"
+  if [[ -f "$hook_path" ]]; then
+    msg "✅ Pre-commit hook already exists. Skipping."
+    return 0
+  fi
+  msg "🔗 Installing Gitleaks pre-commit hook..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write .git/hooks/pre-commit (gitleaks detect --staged --redact)"
+    return 0
+  fi
+  mkdir -p .git/hooks
+  cat >.git/hooks/pre-commit <<'EOF'
+#!/usr/bin/env bash
+if command -v gitleaks &>/dev/null; then
+  if ! gitleaks detect --staged --redact --exit-code 1 2>&1; then
+    echo "❌ Gitleaks detected secrets in staged files. Commit blocked."
+    echo "   Remove secrets from the files above, then re-stage and commit."
+    exit 1
+  fi
+fi
+EOF
+  chmod +x "$hook_path"
+  msg "✅ Pre-commit hook installed at $hook_path"
+}
+
+write_github_actions_workflow() {
+  local workflow_dir=".github/workflows"
+  local workflow_file="$workflow_dir/gitleaks.yml"
+  if [[ -f "$workflow_file" ]]; then
+    msg "✅ $workflow_file already exists. Skipping."
+    return 0
+  fi
+  msg "⚙️ Adding GitHub Actions Gitleaks workflow..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $workflow_file (gitleaks-action@v2 on push + PR)"
+    return 0
+  fi
+  mkdir -p "$workflow_dir"
+  cat >"$workflow_file" <<'EOF'
+name: Gitleaks Secret Scanner
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+jobs:
+  gitleaks:
+    name: Detect secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+EOF
+  msg "✅ $workflow_file created."
+}
+
+enable_github_secret_scanning() {
+  command -v gh >/dev/null 2>&1 || {
+    msg "⚠️ gh not found. Skipping secret scanning enablement."
+    return 0
+  }
+  has_origin_remote || {
+    msg "⚠️ No origin remote. Skipping secret scanning enablement."
+    return 0
+  }
+
+  local remote_url repo_slug
+  remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+  repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+
+  if [[ -z "$repo_slug" || "$repo_slug" == "$remote_url" ]]; then
+    msg "⚠️ Could not determine GitHub repo slug from origin. Skipping secret scanning."
+    return 0
+  fi
+
+  msg "🔐 Enabling GitHub secret scanning + push protection on $repo_slug..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: gh api PATCH /repos/$repo_slug → secret_scanning=enabled"
+    msg "DRY RUN: gh api PATCH /repos/$repo_slug → secret_scanning_push_protection=enabled"
+    return 0
+  fi
+
+  if gh api --method PATCH "/repos/$repo_slug" \
+    -f "security_and_analysis[secret_scanning][status]=enabled" \
+    -f "security_and_analysis[secret_scanning_push_protection][status]=enabled" \
+    >/dev/null 2>&1; then
+    msg "✅ GitHub secret scanning and push protection enabled."
+  else
+    msg "⚠️ Could not enable secret scanning (requires GitHub Advanced Security or public repo). Skipping."
+  fi
+}
+
+run_gitleaks_scan() {
+  local mode="${1:-source}"  # "source" = full tree, "staged" = only staged files
+  if ! gitleaks_available; then
+    msg "⚠️ gitleaks not found. Skipping scan. Install with: brew install gitleaks"
+    return 0
+  fi
+  if [[ "$mode" == "staged" ]]; then
+    msg "🔍 Gitleaks: scanning staged files..."
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: gitleaks detect --staged --redact"
+      return 0
+    fi
+    if ! gitleaks detect --staged --redact --exit-code 1 2>&1; then
+      die "Gitleaks detected secrets in staged files. Commit blocked. Review output above."
+    fi
+    msg "✅ Gitleaks staged scan clean."
+  else
+    msg "🔍 Gitleaks: scanning full working tree..."
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: gitleaks detect --source . --redact"
+      return 0
+    fi
+    if ! gitleaks detect --source . --redact --exit-code 1 2>&1; then
+      die "Gitleaks detected secrets. Review output above and remove before committing."
+    fi
+    msg "✅ Gitleaks scan clean."
+  fi
+}
+
+setup_security_files() {
+  write_gitleaks_toml
+  install_pre_commit_hook
+  write_github_actions_workflow
+}
+
+# ----------------------------
+# Repo helpers
+# ----------------------------
 ensure_repo() {
   if in_git_repo; then
     cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -181,7 +373,8 @@ ensure_repo() {
   msg "🧰 Initializing git repository in: $(pwd)"
   if [[ "$DRY_RUN" == true ]]; then
     msg "DRY RUN: git init"
-    msg "DRY RUN: git checkout -b main (if needed)"
+    msg "DRY RUN: git checkout -b main"
+    msg "DRY RUN: setup_security_files (.gitleaks.toml, pre-commit hook, gitleaks.yml)"
     return 0
   fi
 
@@ -191,6 +384,7 @@ ensure_repo() {
   else
     git checkout -b main >/dev/null
   fi
+  setup_security_files
 }
 
 detect_branch() {
@@ -288,39 +482,52 @@ resolve_realpath() {
   python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$p" 2>/dev/null || echo "$p"
 }
 
-update_self_version_constant() {
-  local new_version="$1"
-  local self_path
-  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  self_path="$(resolve_realpath "$self_path")"
-
-  if [[ ! -f "$self_path" ]]; then
-    msg "⚠️ Cannot update self VERSION. Not a regular file: $self_path"
-    msg "   Tip: run releases from the repo copy: ./bin/commit_gh --release …"
-    return 0
-  fi
-
-  if [[ ! -w "$self_path" ]]; then
-    msg "⚠️ Cannot update self VERSION. File is not writable: $self_path"
-    msg "   Tip: run releases from the repo copy: ./bin/commit_gh --release …"
-    return 0
-  fi
-
-  if grep -qE '^VERSION="[^"]+"' "$self_path"; then
-    if [[ "$DRY_RUN" == true ]]; then
-      msg "DRY RUN: sed -i '' -E 's/^VERSION=\"[^\"]+\"/VERSION=\"${new_version}\"/' \"$self_path\""
+# Returns the writable repo copy of this script (bin/commit_gh in the current
+# git repo root) if one exists, otherwise falls back to the running script path.
+# This lets the globally-installed Homebrew binary correctly update the repo
+# copy rather than trying to write to the read-only Cellar.
+resolve_script_target() {
+  local repo_root
+  if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    local candidate="$repo_root/bin/commit_gh"
+    if [[ -f "$candidate" ]]; then
+      resolve_realpath "$candidate"
       return 0
     fi
-    sed -i '' -E "s/^VERSION=\"[^\"]+\"/VERSION=\"${new_version}\"/" "$self_path"
+  fi
+  local self_path
+  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  resolve_realpath "$self_path"
+}
+
+update_self_version_constant() {
+  local new_version="$1"
+  local target_path
+  target_path="$(resolve_script_target)"
+
+  if [[ ! -f "$target_path" ]]; then
+    die "Cannot update VERSION constant: not a regular file: $target_path"
+  fi
+
+  if [[ ! -w "$target_path" ]]; then
+    die "Cannot update VERSION constant: file is not writable: $target_path\n   Ensure you are running from inside the commit_gh_cli repo directory."
+  fi
+
+  if grep -qE '^VERSION="[^"]+"' "$target_path"; then
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "DRY RUN: sed VERSION → $new_version in $target_path"
+      return 0
+    fi
+    sed -i '' -E "s/^VERSION=\"[^\"]+\"/VERSION=\"${new_version}\"/" "$target_path"
+    msg "✅ Updated VERSION constant in $(basename "$target_path") to $new_version"
   fi
 }
 
 get_self_version_constant() {
-  local self_path
-  self_path="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  self_path="$(resolve_realpath "$self_path")"
+  local target_path
+  target_path="$(resolve_script_target)"
 
-  grep -E '^VERSION="[^"]+"' "$self_path" |
+  grep -E '^VERSION="[^"]+"' "$target_path" |
     head -n1 |
     sed -E 's/^VERSION="([^"]+)".*/\1/'
 }
@@ -391,6 +598,18 @@ create_github_release() {
 }
 
 # ----------------------------
+# Standalone --scan mode (exits immediately after scan)
+# ----------------------------
+if [[ "$SCAN_MODE" == true ]]; then
+  if ! gitleaks_available; then
+    die "gitleaks not found. Install with: brew install gitleaks"
+  fi
+  run_gitleaks_scan "source"
+  always_msg "🎉 Done."
+  exit 0
+fi
+
+# ----------------------------
 # Start
 # ----------------------------
 ensure_repo
@@ -412,6 +631,11 @@ if in_git_repo && git ls-files --error-unmatch FOLDER_TREE.md &>/dev/null; then
 fi
 
 ensure_origin_remote || true
+
+# Enable GitHub secret scanning if requested (after remote exists)
+if [[ "$ENABLE_SECRET_SCANNING" == true ]]; then
+  enable_github_secret_scanning
+fi
 
 # Decide commit message
 if [[ -n "$COMMIT_MESSAGE_OVERRIDE" ]]; then
@@ -445,13 +669,15 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   # Sync first (avoid stash eating our edits)
   sync_with_remote_rebase "$branch"
 
-  # Update the script's VERSION constant (repo copy)
+  # Update the script's VERSION constant (repo copy); dies if target not writable
   update_self_version_constant "$new_version"
 
-  # Guard AFTER the update
-  self_version="$(get_self_version_constant)"
-  if [[ "$self_version" != "$new_version" ]]; then
-    die "Refusing to tag: bin/commit_gh VERSION is $self_version but release version is $new_version"
+  # Guard: verify the on-disk constant matches (skipped in dry-run since no write occurred)
+  if [[ "$DRY_RUN" != true ]]; then
+    self_version="$(get_self_version_constant)"
+    if [[ "$self_version" != "$new_version" ]]; then
+      die "Refusing to tag: bin/commit_gh VERSION is $self_version but release version is $new_version"
+    fi
   fi
 
   # Update VERSION file
@@ -512,6 +738,11 @@ if [[ "$DRY_RUN" == true ]]; then
   msg "DRY RUN: git add ."
 else
   git add . >/dev/null
+fi
+
+# Gitleaks staged scan before commit (skippable with --no-scan)
+if [[ "$NO_SCAN" != true ]]; then
+  run_gitleaks_scan "staged"
 fi
 
 DID_COMMIT=0
