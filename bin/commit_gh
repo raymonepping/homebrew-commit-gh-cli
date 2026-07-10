@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.26"
+VERSION="2.1.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -74,67 +74,85 @@ die() {
 }
 
 usage() {
+  local sep="${DIM}────────────────────────────────────────────────────${RESET}"
   printf "%s\n" \
-    "${BOLD}${CYAN}commit_gh${RESET} ${DIM}v${VERSION}${RESET}" \
     "" \
-    "${BOLD}Usage:${RESET} commit_gh [options]" \
+    "  ${BOLD}${CYAN}commit_gh${RESET}  ${DIM}v${VERSION}${RESET}" \
+    "  ${DIM}Secure git commits, releases, and repository hardening${RESET}" \
     "" \
-    "${BOLD}${BLUE}Core behavior (unchanged):${RESET}" \
-    "  - Adds/commits/pushes when needed" \
-    "  - Stashes local changes before pull --rebase" \
-    "  - Detects rebase/merge in progress and exits safely" \
-    "  - Optional folder tree regeneration" \
-    "  - Optional tag bump from latest git tag (${BOLD}--bump${RESET})" \
+    "  $sep" \
     "" \
-    "${BOLD}${MAGENTA}New capabilities:${RESET}" \
-    "  ${BOLD}--init-repo${RESET}                 Initialize a git repo in the current directory if missing" \
-    "  ${BOLD}--init-remote${RESET}               Create 'origin' via GitHub CLI (gh) if missing" \
-    "  ${BOLD}--public${RESET}                    When creating remote, make it public" \
-    "  ${BOLD}--private${RESET}                   When creating remote, make it private (default)" \
-    "  ${BOLD}--release${RESET} ${YELLOW}patch|minor|major|x.y.z${RESET}  Bump VERSION, commit, tag, push, GitHub release" \
-    "  ${BOLD}--force${RESET}                     Overwrite existing tag and GitHub release (use with --release)" \
-    "  ${BOLD}--no-release${RESET}                Tag and push only; skip GitHub release creation" \
-    "  ${BOLD}--generate-notes${RESET}            Auto-generate GitHub release notes (default: static message)" \
-    "  ${BOLD}--read-version-only${RESET}         Print version inventory (VERSION file, script, tag) and exit" \
-    "  ${BOLD}--version-file${RESET} ${YELLOW}<path>${RESET}       Version file to use for --release (default: VERSION)" \
-    "  ${BOLD}--branch${RESET} ${YELLOW}<name>${RESET}             Branch to use (default: detected current branch, else main)" \
-    "  ${BOLD}--message${RESET} ${YELLOW}\"<msg>\"${RESET}           Override commit message (default: chore: release vX.Y.Z)" \
-    "  ${BOLD}--dry-run${RESET}                   Show what would happen without making changes" \
+    "  ${BOLD}Quick start${RESET}" \
+    "  ${CYAN}commit_gh${RESET} ${DIM}--init-repo --init-remote --public --secret-scanning${RESET}  ${DIM}# new repo${RESET}" \
+    "  ${CYAN}commit_gh${RESET} ${DIM}--harden --audit${RESET}                                      ${DIM}# secure existing repo${RESET}" \
+    "  ${CYAN}commit_gh${RESET} ${DIM}--release patch${RESET}                                       ${DIM}# ship a release${RESET}" \
     "" \
-    "${BOLD}${RED}Security (v2.0):${RESET}" \
-    "  ${BOLD}--audit${RESET}                     Check which security guardrails are present/missing" \
-    "  ${BOLD}--harden${RESET}                    Install missing guardrails in an existing repo" \
-    "  ${BOLD}--scan${RESET}                      Run Gitleaks secret scan on full working tree and exit" \
-    "  ${BOLD}--no-scan${RESET}                   Skip automatic Gitleaks staged scan before commit" \
-    "  ${BOLD}--no-hook${RESET}                   Skip pre-commit hook installation during --init-repo" \
-    "  ${BOLD}--secret-scanning${RESET}           Enable GitHub secret scanning + push protection on remote" \
+    "  $sep" \
+    "" \
+    "  ${BOLD}${BLUE}Setup${RESET}" \
+    "  ${BOLD}--init-repo${RESET}              Initialize a git repo in the current directory" \
+    "  ${BOLD}--init-remote${RESET}            Create origin remote via gh CLI" \
+    "  ${BOLD}--public${RESET} / ${BOLD}--private${RESET}     Visibility for --init-remote  ${DIM}(default: private)${RESET}" \
+    "" \
+    "  ${BOLD}${RED}Security${RESET}" \
+    "  ${BOLD}--harden${RESET}                 Install missing guardrails  ${DIM}(idempotent — safe to re-run)${RESET}" \
+    "  ${BOLD}--audit${RESET}                  Report which guardrails are present / missing  ${DIM}(exit 1 if any missing)${RESET}" \
+    "  ${BOLD}--scan${RESET}                   Run Gitleaks on full working tree and exit" \
+    "  ${BOLD}--no-scan${RESET}                Skip staged scan before commit" \
+    "  ${BOLD}--no-hook${RESET}                Skip pre-commit hook installation" \
+    "  ${BOLD}--secret-scanning${RESET}        Enable GitHub secret scanning + push protection on remote" \
     "" \
     "  ${DIM}--init-repo and --harden both install:${RESET}" \
-    "    ${DIM}·${RESET} ${CYAN}.gitignore${RESET}               Strong defaults (secrets, OS, editor, build)" \
-    "    ${DIM}·${RESET} ${CYAN}.env.example${RESET}             Template — commit this, never .env" \
-    "    ${DIM}·${RESET} ${CYAN}.gitleaks.toml${RESET}           Gitleaks config (allowlist CHANGELOG, etc.)" \
-    "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}    Blocks sensitive filenames + secret content" \
-    "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}  CI scan (SHA-pinned, permissions: read-all)" \
+    "    ${DIM}·${RESET} ${CYAN}.gitignore${RESET}                          secrets, OS, editor, build, *.jsonl, input/, output/" \
+    "    ${DIM}·${RESET} ${CYAN}.env.example${RESET}                        credential template (commit this, never .env)" \
+    "    ${DIM}·${RESET} ${CYAN}.gitleaks.toml${RESET}                      Gitleaks config with CHANGELOG allowlist" \
+    "    ${DIM}·${RESET} ${CYAN}.git/hooks/pre-commit${RESET}               blocks sensitive filenames + scans staged files" \
+    "    ${DIM}·${RESET} ${CYAN}.github/workflows/gitleaks.yml${RESET}      CI scan, SHA-pinned, permissions: read-all" \
+    "    ${DIM}·${RESET} ${CYAN}.github/workflows/release.yml${RESET}       automated GitHub release on tag push" \
+    "    ${DIM}·${RESET} ${CYAN}.github/dependabot.yml${RESET}              weekly GitHub Actions updates" \
+    "    ${DIM}·${RESET} ${CYAN}CHANGELOG.md  LICENSE  README.md  CONTRIBUTING.md${RESET}" \
+    "    ${DIM}·${RESET} ${CYAN}.github/ISSUE_TEMPLATE/  pull_request_template.md  CODEOWNERS${RESET}" \
+    "    ${DIM}·${RESET} ${CYAN}.editorconfig  docs/release-checklist.md${RESET}" \
     "" \
-    "${BOLD}${GREEN}Existing options:${RESET}" \
-    "  ${BOLD}--quiet${RESET}, ${BOLD}-q${RESET}                 Suppress most output" \
-    "  ${BOLD}--tree${RESET} ${YELLOW}[true|false]${RESET}         Generate folder tree if folder_tree exists" \
-    "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}    Create new git tag based on latest git tag" \
-    "  ${BOLD}--preview${RESET}                   Preview next tag for --bump without creating it" \
-    "  ${BOLD}--verify${RESET}                    Run verification checks (working tree clean, etc.)" \
-    "  ${BOLD}--help${RESET}, ${BOLD}-h${RESET}                  Show this help and exit" \
-    "  ${BOLD}--version${RESET}                   Show script version" \
+    "  ${BOLD}${MAGENTA}Release${RESET}" \
+    "  ${BOLD}--release${RESET} ${YELLOW}patch|minor|major|x.y.z${RESET}  Bump VERSION, commit, tag, push, GitHub release" \
+    "  ${BOLD}--force${RESET}                  Overwrite existing tag and release  ${DIM}(use with --release)${RESET}" \
+    "  ${BOLD}--no-release${RESET}             Tag and push only — skip GitHub release creation" \
+    "  ${BOLD}--generate-notes${RESET}         Auto-generate release notes from pull requests" \
+    "  ${BOLD}--read-version-only${RESET}      Print version inventory (VERSION file, script, tag) and exit" \
+    "  ${BOLD}--version-file${RESET} ${YELLOW}<path>${RESET}     Version file for --release  ${DIM}(default: VERSION)${RESET}" \
     "" \
-    "${BOLD}${BLUE}Examples:${RESET}" \
-    "  ${CYAN}commit_gh${RESET} --init-repo --init-remote" \
+    "  ${BOLD}${GREEN}Commit${RESET}" \
+    "  ${BOLD}--branch${RESET} ${YELLOW}<name>${RESET}           Branch for commit and push  ${DIM}(default: current, else main)${RESET}" \
+    "  ${BOLD}--message${RESET} ${YELLOW}\"<text>\"${RESET}        Override commit message" \
+    "  ${BOLD}--dry-run${RESET}                Show what would happen without making changes" \
+    "  ${BOLD}--quiet${RESET}, ${BOLD}-q${RESET}               Suppress most output" \
+    "  ${BOLD}--tree${RESET} ${YELLOW}[true|false]${RESET}       Regenerate folder tree before committing" \
+    "" \
+    "  ${BOLD}Utilities${RESET}" \
+    "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}  Create a git tag from latest tag  ${DIM}(no file changes)${RESET}" \
+    "  ${BOLD}--preview${RESET}                Preview next --bump tag without creating it" \
+    "  ${BOLD}--verify${RESET}                 Run verification checks (clean tree, branch, version)" \
+    "  ${BOLD}--help${RESET}, ${BOLD}-h${RESET}               Show this help and exit" \
+    "  ${BOLD}--version${RESET}                Show script version" \
+    "" \
+    "  $sep" \
+    "" \
+    "  ${BOLD}${BLUE}Examples${RESET}" \
     "  ${CYAN}commit_gh${RESET} --init-repo --init-remote --public --secret-scanning" \
-    "  ${CYAN}commit_gh${RESET} --scan" \
+    "  ${CYAN}commit_gh${RESET} --harden --audit" \
+    "  ${CYAN}commit_gh${RESET}" \
+    "  ${CYAN}commit_gh${RESET} --message \"feat: add login endpoint\"" \
     "  ${CYAN}commit_gh${RESET} --release patch" \
     "  ${CYAN}commit_gh${RESET} --release 2.1.0 --generate-notes" \
     "  ${CYAN}commit_gh${RESET} --release patch --force" \
-    "  ${CYAN}commit_gh${RESET} --release minor --no-release" \
+    "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --read-version-only" \
-    "  ${CYAN}commit_gh${RESET} --message \"chore: sync changes\" --tree true" \
+    "  ${CYAN}commit_gh${RESET} --release minor --dry-run" \
+    "" \
+    "  $sep" \
+    "  ${DIM}Full documentation:  man commit_gh${RESET}" \
+    "  ${DIM}Source & issues:     https://github.com/raymonepping/homebrew-commit-gh-cli${RESET}" \
     ""
 }
 

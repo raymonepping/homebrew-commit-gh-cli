@@ -1,0 +1,309 @@
+.TH COMMIT_GH 1 "July 2026" "commit_gh 2.0.27" "User Commands"
+.SH NAME
+commit_gh \- secure git commits, releases, and repository hardening
+.SH SYNOPSIS
+.B commit_gh
+[\fIFLAGS\fR]
+.SH DESCRIPTION
+\fBcommit_gh\fR is a Bash CLI that wraps \fBgit\fR(1) and \fBgh\fR(1) to enforce a
+secure, opinionated commit and release workflow.
+.PP
+It addresses three concerns: repository scaffolding and security hardening,
+staged-file secret scanning before every commit, and automated semantic
+versioning with GitHub release creation.
+.PP
+All write operations are idempotent \(em safe to re-run against any repository
+at any stage of its lifecycle.
+.SH OPTIONS
+.SS Setup
+.TP
+.B \-\-init\-repo
+Initialize a git repository in the current directory if one does not already
+exist. Runs the full security scaffold automatically (equivalent to
+\fB\-\-harden\fR). Creates an initial commit so that \fBgh repo create \-\-push\fR
+has commits to push.
+.TP
+.B \-\-init\-remote
+Create an \fIorigin\fR remote via the GitHub CLI if none exists. Requires
+\fBgh\fR to be installed and authenticated (\fBgh auth login\fR).
+.TP
+.B \-\-public
+Make the remote repository public when used with \fB\-\-init\-remote\fR.
+.TP
+.B \-\-private
+Make the remote repository private when used with \fB\-\-init\-remote\fR.
+This is the default.
+.SS Security
+.TP
+.B \-\-harden
+Install missing security guardrails in the current repository. Idempotent:
+any file that already exists is left untouched.
+.PP
+.RS
+Creates or updates:
+.RS
+.IP \(bu 2
+\fI.gitignore\fR \(em secrets, OS artefacts, editor files, build output,
+\fI*.jsonl\fR, \fIinput/\fR and \fIoutput/\fR directories
+.IP \(bu 2
+\fI.env.example\fR \(em credential template (commit this, never \fI.env\fR)
+.IP \(bu 2
+\fI.gitleaks.toml\fR \(em Gitleaks config extending the default ruleset
+with an allowlist for \fICHANGELOG.md\fR
+.IP \(bu 2
+\fI.git/hooks/pre\-commit\fR \(em blocks sensitive filenames and runs
+Gitleaks on staged files before every commit
+.IP \(bu 2
+\fI.github/workflows/gitleaks.yml\fR \(em CI secret scan with SHA-pinned
+action, \fBpermissions: read-all\fR
+.IP \(bu 2
+\fI.github/workflows/release.yml\fR \(em automated GitHub release on tag push
+.IP \(bu 2
+\fI.github/dependabot.yml\fR \(em weekly GitHub Actions dependency updates
+.IP \(bu 2
+\fICHANGELOG.md\fR, \fILICENSE\fR (MIT), \fIREADME.md\fR, \fICONTRIBUTING.md\fR
+.IP \(bu 2
+\fI.github/ISSUE_TEMPLATE/bug_report.md\fR and \fIfeature_request.md\fR
+.IP \(bu 2
+\fI.github/pull_request_template.md\fR
+.IP \(bu 2
+\fI.github/CODEOWNERS\fR (owner from \fBgh api user\fR)
+.IP \(bu 2
+\fI.editorconfig\fR, \fIdocs/release\-checklist.md\fR
+.RE
+.RE
+.TP
+.B \-\-audit
+Check which guardrails are present and report any that are missing.
+Exits 0 if every check passes, exits 1 if any check fails.
+Run after \fB\-\-harden\fR to confirm the result:
+.RS
+.nf
+commit_gh \-\-harden \-\-audit
+.fi
+.RE
+.TP
+.B \-\-scan
+Run Gitleaks against the full working tree and exit. Requires
+\fBgitleaks\fR to be installed.
+.TP
+.B \-\-no\-scan
+Skip the automatic Gitleaks staged-file scan that runs before every commit.
+.TP
+.B \-\-no\-hook
+Skip pre\-commit hook installation when \fB\-\-init\-repo\fR or \fB\-\-harden\fR runs.
+.TP
+.B \-\-secret\-scanning
+Enable GitHub Secret Scanning and push protection on the remote repository
+via the GitHub API (\fBPATCH /repos/{slug}\fR). Also enables Dependabot
+vulnerability alerts (\fBPUT /repos/{slug}/vulnerability\-alerts\fR).
+Requires admin access to the repository.
+.SS Release
+.TP
+.BR \-\-release " " \fIpatch\fR|\fIminor\fR|\fImajor\fR|\fIx.y.z\fR
+Bump the \fIVERSION\fR file, commit, create an annotated tag, push branch
+and tag, and create a GitHub release. The bump type may be \fIpatch\fR,
+\fIminor\fR, \fImajor\fR, or an explicit version such as \fI2.1.0\fR.
+.TP
+.B \-\-force
+Overwrite an existing tag and GitHub release when used with \fB\-\-release\fR.
+.TP
+.B \-\-no\-release
+Tag and push only; skip GitHub release creation.
+.TP
+.B \-\-generate\-notes
+Auto\-generate GitHub release notes from merged pull requests instead of
+using the default static \fIRelease vX.Y.Z\fR message.
+.TP
+.B \-\-read\-version\-only
+Print the \fIVERSION\fR file, the script\(aqs internal \fBVERSION=\fR constant,
+and the latest git tag, then exit. Useful to confirm sources are aligned
+before releasing.
+.TP
+.BR \-\-version\-file " " \fIpath\fR
+Path to the version file updated by \fB\-\-release\fR. Default: \fIVERSION\fR.
+.SS Commit
+.TP
+.BR \-\-branch " " \fIname\fR
+Branch to use for commit and push. Default: the current branch, falling
+back to \fImain\fR if HEAD has no commits yet.
+.TP
+.BR \-\-message " " \fI"text"\fR
+Override the auto\-generated commit message.
+Default: \fIDD/MM/YYYY \- Updated configuration and fixed bugs\fR.
+.TP
+.B \-\-dry\-run
+Print every action that would be taken without modifying any files or
+running any git commands.
+.TP
+.BR \-\-quiet ", " \-q
+Suppress informational output. Error messages are always printed.
+.TP
+.BR \-\-tree " [" \fItrue\fR | \fIfalse\fR ]
+Regenerate the folder tree using \fBfolder_tree\fR(1) before committing.
+The optional argument defaults to \fItrue\fR when omitted.
+.SS Utilities
+.TP
+.BR \-\-bump " " \fIpatch\fR|\fIminor\fR|\fImajor\fR
+Create a new annotated git tag by incrementing the latest existing tag.
+Does not modify any files (use \fB\-\-release\fR for full release automation).
+.TP
+.B \-\-preview
+Preview the next tag that \fB\-\-bump\fR would create without creating it.
+.TP
+.B \-\-verify
+Run verification checks: clean working tree, correct branch, and alignment
+between the \fI.version\fR file and the latest git tag.
+.TP
+.BR \-\-help ", " \-h
+Show a help summary and exit.
+.TP
+.B \-\-version
+Show the script version and exit.
+.SH SECURITY MODEL
+\fBcommit_gh\fR implements a three-layer defence against secret leakage:
+.PP
+.B "Layer 1 \(em Filename blocking (pre-commit hook)"
+.RS
+Matches staged filenames against a pattern covering \fI.env\fR, \fI*.pem\fR,
+\fI*.key\fR, SSH private keys (\fIid_rsa\fR, \fIid_ed25519\fR, etc.), and Vault
+config files (\fI.vault.*\fR). Blocks the commit before Git creates it.
+.RE
+.PP
+.B "Layer 2 \(em Content scanning (Gitleaks)"
+.RS
+Scans staged file \fIcontents\fR using Gitleaks. Catches secrets embedded
+inside files whose names appear innocent (Terraform vars, JSON configs,
+YAML documents, source code). False positives are suppressed via
+\fI.gitleaks.toml\fR stopwords or path allowlists.
+.RE
+.PP
+.B "Layer 3 \(em GitHub Secret Scanning"
+.RS
+Server-side scanning on every push. Catches secrets that bypass local
+tooling (commits made with \fB\-\-no\-verify\fR, contributors without the
+hook, pushes from other machines). Enabled via \fB\-\-secret\-scanning\fR.
+.RE
+.SH EXAMPLES
+.PP
+Full setup for a new repository:
+.RS
+.nf
+commit_gh \-\-init\-repo \-\-init\-remote \-\-public \-\-secret\-scanning
+.fi
+.RE
+.PP
+Secure and verify an existing repository in one pass:
+.RS
+.nf
+commit_gh \-\-harden \-\-audit
+.fi
+.RE
+.PP
+Everyday commit and push (no arguments needed):
+.RS
+.nf
+commit_gh
+.fi
+.RE
+.PP
+Commit with a specific message:
+.RS
+.nf
+commit_gh \-\-message "feat: add OAuth login"
+.fi
+.RE
+.PP
+Release a patch version:
+.RS
+.nf
+commit_gh \-\-release patch
+.fi
+.RE
+.PP
+Release a specific version with auto\-generated notes:
+.RS
+.nf
+commit_gh \-\-release 2.1.0 \-\-generate\-notes
+.fi
+.RE
+.PP
+Overwrite an existing tag and release:
+.RS
+.nf
+commit_gh \-\-release patch \-\-force
+.fi
+.RE
+.PP
+Preview what a minor release would do without making changes:
+.RS
+.nf
+commit_gh \-\-release minor \-\-dry\-run
+.fi
+.RE
+.PP
+Scan the full working tree for secrets:
+.RS
+.nf
+commit_gh \-\-scan
+.fi
+.RE
+.PP
+Check version alignment before releasing:
+.RS
+.nf
+commit_gh \-\-read\-version\-only
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success. For \fB\-\-audit\fR: all guardrails are in place.
+.TP
+.B 1
+Error or missing guardrails. For \fB\-\-audit\fR: one or more checks failed.
+.SH DEPENDENCIES
+.TP
+.B bash(1)
+Version 4.0 or later. The macOS system bash is version 3; install a
+current version with \fBbrew install bash\fR.
+.TP
+.B git(1)
+Required for all operations.
+.TP
+.B gh(1)
+GitHub CLI. Required for \fB\-\-init\-remote\fR, GitHub release creation
+(\fB\-\-release\fR), and \fB\-\-secret\-scanning\fR. Install: \fBbrew install gh\fR.
+Authenticate: \fBgh auth login\fR.
+.TP
+.B gitleaks(1)
+Required for \fB\-\-scan\fR and for content scanning in the pre\-commit hook.
+Install: \fBbrew install gitleaks\fR.
+.SH FILES
+.TP
+.I .gitignore
+Written by \fB\-\-harden\fR. Strong defaults for secrets, OS artefacts, editor
+files, build output, and data directories.
+.TP
+.I .gitleaks.toml
+Written by \fB\-\-harden\fR. Extends the Gitleaks default ruleset with a
+project\-level allowlist.
+.TP
+.I .git/hooks/pre\-commit
+Installed by \fB\-\-harden\fR. Runs before every \fBgit commit\fR. Blocks sensitive
+filenames and scans staged content with Gitleaks.
+.TP
+.I .github/workflows/gitleaks.yml
+Written by \fB\-\-harden\fR. Runs Gitleaks in CI on push and pull request events.
+.TP
+.I VERSION
+The authoritative version file. Read and updated by \fB\-\-release\fR.
+.SH AUTHORS
+Raymon Epping <repping@gmail.com>
+.SH SEE ALSO
+.BR git (1),
+.BR gh (1),
+.BR gitleaks (1),
+.BR bash (1)
+.PP
+Source and issues: https://github.com/raymonepping/homebrew-commit-gh-cli

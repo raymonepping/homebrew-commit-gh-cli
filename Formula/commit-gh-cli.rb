@@ -10,6 +10,10 @@ class CommitGhCli < Formula
   def install
     bin.install "bin/commit_gh"
     doc.install "README.md"
+    man1.install "man/commit_gh.1"
+    zsh_completion.install "completions/_commit_gh"
+    bash_completion.install "completions/commit_gh.bash"
+    fish_completion.install "completions/commit_gh.fish"
   end
 
   test do

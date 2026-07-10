@@ -1,0 +1,38 @@
+#compdef commit_gh
+
+_commit_gh() {
+  _arguments -s -S \
+    '(- 1 *)'{--help,-h}'[show help and exit]' \
+    '(- 1 *)--version[show script version]' \
+    '(-q --quiet)'{--quiet,-q}'[suppress most output]' \
+    '--dry-run[show what would happen without making changes]' \
+    \
+    '--init-repo[initialize a git repo in the current directory]' \
+    '--init-remote[create origin remote via gh CLI]' \
+    '--public[make remote repo public (with --init-remote)]' \
+    '--private[make remote repo private — default (with --init-remote)]' \
+    \
+    '--harden[install missing security guardrails — idempotent]' \
+    '--audit[report which guardrails are present or missing]' \
+    '--scan[run gitleaks on full working tree and exit]' \
+    '--no-scan[skip automatic gitleaks staged scan before commit]' \
+    '--no-hook[skip pre-commit hook installation]' \
+    '--secret-scanning[enable GitHub secret scanning and push protection on remote]' \
+    \
+    '--release=[bump version, commit, tag, push, and create GitHub release]:bump type:(patch minor major)' \
+    '--force[overwrite existing tag and GitHub release (use with --release)]' \
+    '--no-release[tag and push only — skip GitHub release creation]' \
+    '--generate-notes[auto-generate GitHub release notes from pull requests]' \
+    '--read-version-only[print version inventory and exit]' \
+    '--version-file=[version file to use for --release (default: VERSION)]:file:_files' \
+    \
+    '--branch=[branch to use for commit and push]:branch:__git_branch_names' \
+    '--message=[override the default commit message]:message' \
+    '--tree=[regenerate folder tree before committing]:enable:(true false)' \
+    \
+    '--bump=[create a new git tag from the latest tag]:bump type:(patch minor major)' \
+    '--preview[preview next --bump tag without creating it]' \
+    '--verify[run verification checks (clean tree, branch, version)]'
+}
+
+_commit_gh "$@"
