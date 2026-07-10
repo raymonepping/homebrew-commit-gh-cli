@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.22"
+VERSION="2.0.23"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -253,18 +253,20 @@ unstage_blocked_files() {
 write_gitignore() {
   local gi_path=".gitignore"
   if [[ -f "$gi_path" ]]; then
-    local _has_env _has_star_env _has_vault _missing=()
+    local _has_env _has_star_env _has_vault _has_jsonl _has_input _has_output _missing=() _did_append=false
     grep -qE '^\.env$|^\.env\b' "$gi_path" 2>/dev/null && _has_env=true || _has_env=false
     grep -qE '^\*\.env$' "$gi_path" 2>/dev/null && _has_star_env=true || _has_star_env=false
     grep -qE '^\.vault\.\*$' "$gi_path" 2>/dev/null && _has_vault=true || _has_vault=false
+    grep -qE '^\*\.jsonl$' "$gi_path" 2>/dev/null && _has_jsonl=true || _has_jsonl=false
+    grep -qE '^input/' "$gi_path" 2>/dev/null && _has_input=true || _has_input=false
+    grep -qE '^output/' "$gi_path" 2>/dev/null && _has_output=true || _has_output=false
 
     if [[ "$_has_env" == false ]]; then
       msg "⚠️ .gitignore exists but missing .env coverage — appending secrets block..."
       if [[ "$DRY_RUN" == true ]]; then
         msg "DRY RUN: append secrets block to .gitignore"
-        return 0
-      fi
-      cat >>"$gi_path" <<'EOF'
+      else
+        cat >>"$gi_path" <<'EOF'
 
 # ── Secrets & credentials (added by commit_gh --harden) ────────
 .env
@@ -290,16 +292,21 @@ id_ed25519
 *_ecdsa
 *_ed25519
 EOF
-      msg "✅ Secrets block appended to .gitignore."
-      return 0
+      fi
+      _did_append=true
+      _has_star_env=true
+      _has_vault=true
     fi
 
-    # Check for individual missing patterns and append each
+    # Collect any individually missing patterns
     [[ "$_has_star_env" == false ]] && _missing+=("*.env")
     [[ "$_has_vault" == false ]] && _missing+=(".vault.*" "*.vault")
+    [[ "$_has_jsonl" == false ]] && _missing+=("*.jsonl")
+    [[ "$_has_input" == false ]] && _missing+=("input/*" "!input/.gitkeep")
+    [[ "$_has_output" == false ]] && _missing+=("output/*" "!output/.gitkeep")
 
     if [[ ${#_missing[@]} -eq 0 ]]; then
-      msg "✅ .gitignore already exists. Skipping."
+      [[ "$_did_append" == false ]] && msg "✅ .gitignore already exists. Skipping."
       return 0
     fi
 
@@ -370,6 +377,12 @@ out/
 *.a
 *.so
 *.dylib
+
+# ── Input / output data (keep dirs via .gitkeep, never content)
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
 
 # ── Dependencies ──────────────────────────────────────────────
 node_modules/
@@ -894,6 +907,20 @@ EOF
   msg "✅ .editorconfig created."
 }
 
+write_io_gitkeeps() {
+  local _dir
+  for _dir in input output; do
+    if [[ -d "$_dir" ]]; then
+      if [[ ! -f "$_dir/.gitkeep" ]]; then
+        msg "📄 Creating $_dir/.gitkeep (keeps empty dir tracked by git)..."
+        [[ "$DRY_RUN" != true ]] && touch "$_dir/.gitkeep"
+      else
+        msg "✅ $_dir/.gitkeep already exists. Skipping."
+      fi
+    fi
+  done
+}
+
 write_release_checklist() {
   local checklist="docs/release-checklist.md"
   if [[ -f "$checklist" ]]; then
@@ -1009,6 +1036,7 @@ setup_security_files() {
   write_codeowners
   write_editorconfig
   write_release_checklist
+  write_io_gitkeeps
 }
 
 run_audit() {
