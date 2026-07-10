@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.5"
+VERSION="2.0.6"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -813,6 +813,14 @@ ensure_repo() {
     git checkout -b main >/dev/null
   fi
   setup_security_files
+
+  # Commit scaffold files now so gh repo create --push has commits to push
+  # and sets the local origin remote correctly.
+  git add . >/dev/null
+  if ! git diff --cached --quiet; then
+    git commit -m "chore: initial scaffold" >/dev/null
+    msg "✅ Initial commit created."
+  fi
 }
 
 detect_branch() {
