@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.7"
+VERSION="2.0.8"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -439,6 +439,53 @@ EOF
   msg "✅ $workflow_file created."
 }
 
+write_release_workflow() {
+  local workflow_dir=".github/workflows"
+  local workflow_file="$workflow_dir/release.yml"
+  if [[ -f "$workflow_file" ]]; then
+    msg "✅ $workflow_file already exists. Skipping."
+    return 0
+  fi
+  msg "⚙️ Adding GitHub Actions release workflow..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $workflow_file (gh release create on v* tag push)"
+    return 0
+  fi
+  mkdir -p "$workflow_dir"
+  cat >"$workflow_file" <<'EOF'
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists — skipping."
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
+EOF
+  msg "✅ $workflow_file created."
+}
+
 write_changelog() {
   if [[ -f "CHANGELOG.md" ]]; then
     msg "✅ CHANGELOG.md already exists. Skipping."
@@ -665,6 +712,7 @@ setup_security_files() {
   write_gitleaks_toml
   install_pre_commit_hook
   write_github_actions_workflow
+  write_release_workflow
   write_changelog
   write_license
   write_readme
@@ -720,6 +768,14 @@ run_audit() {
     fi
   else
     always_msg "  ${RED}❌${RESET}  .github/workflows/gitleaks.yml   missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # release workflow
+  if [[ -f ".github/workflows/release.yml" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/workflows/release.yml    present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .github/workflows/release.yml    missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
   fi
 
