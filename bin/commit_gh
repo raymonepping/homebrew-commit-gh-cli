@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.12"
+VERSION="2.0.13"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -388,9 +388,10 @@ fi
 
 # Gitleaks secret scan on staged content
 if command -v gitleaks &>/dev/null; then
-  if ! gitleaks protect --staged --redact 2>&1; then
+  if ! gitleaks protect --staged --redact -v 2>&1; then
     echo "❌ Gitleaks detected secrets in staged files. Commit blocked."
-    echo "   Remove secrets from the files above, then re-stage and commit."
+    echo "   Fix the file shown above, then re-stage and commit."
+    echo "   False positive? Add an allowlist entry to .gitleaks.toml"
     exit 1
   fi
 fi
@@ -885,7 +886,7 @@ run_gitleaks_scan() {
       msg "DRY RUN: gitleaks protect --staged --redact"
       return 0
     fi
-    if ! gitleaks protect --staged --redact 2>&1; then
+    if ! gitleaks protect --staged --redact -v 2>&1; then
       die "Gitleaks detected secrets in staged files. Commit blocked. Review output above."
     fi
     msg "✅ Gitleaks staged scan clean."
