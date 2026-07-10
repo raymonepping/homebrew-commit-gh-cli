@@ -1,8 +1,8 @@
 class CommitGhCli < Formula
   desc "Secure Git commits, releases, and repository security hardening"
   homepage "https://github.com/raymonepping/homebrew-commit-gh-cli"
-  url "https://github.com/raymonepping/homebrew-commit-gh-cli/archive/refs/tags/v2.3.0.tar.gz"
-  sha256 "a1f143ca9afb17ced2ae044f1c109f5ee0a1b7b9349e54dc3effd8a3add2f3d4"
+  url "https://github.com/raymonepping/homebrew-commit-gh-cli/archive/refs/tags/v2.3.2.tar.gz"
+  sha256 "b41b8acfd2f00fed50478dd1f9749deff0424d94fc2b7bb0c7df6c373f44f859"
   license "MIT"
 
   depends_on "bash"
