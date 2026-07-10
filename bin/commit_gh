@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.8"
+VERSION="2.0.9"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -641,6 +641,135 @@ EOF
   msg "✅ CONTRIBUTING.md created."
 }
 
+write_dependabot() {
+  local dep_file=".github/dependabot.yml"
+  if [[ -f "$dep_file" ]]; then
+    msg "✅ $dep_file already exists. Skipping."
+    return 0
+  fi
+  msg "🤖 Writing $dep_file (github-actions weekly)..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $dep_file"
+    return 0
+  fi
+  mkdir -p .github
+  cat >"$dep_file" <<'EOF'
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+EOF
+  msg "✅ $dep_file created."
+}
+
+write_issue_templates() {
+  local tpl_dir=".github/ISSUE_TEMPLATE"
+  if [[ -f "$tpl_dir/bug_report.md" ]] && [[ -f "$tpl_dir/feature_request.md" ]]; then
+    msg "✅ Issue templates already exist. Skipping."
+    return 0
+  fi
+  msg "📋 Writing issue templates..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $tpl_dir/bug_report.md + feature_request.md"
+    return 0
+  fi
+  mkdir -p "$tpl_dir"
+  cat >"$tpl_dir/bug_report.md" <<'EOF'
+---
+name: Bug report
+about: Something isn't working
+labels: bug
+---
+
+**Describe the bug**
+A clear description of what the bug is.
+
+**To reproduce**
+Steps to reproduce the behaviour.
+
+**Expected behaviour**
+What you expected to happen.
+
+**Environment**
+- OS:
+- Version:
+EOF
+  cat >"$tpl_dir/feature_request.md" <<'EOF'
+---
+name: Feature request
+about: Suggest an idea
+labels: enhancement
+---
+
+**Problem / motivation**
+A clear description of the problem or gap.
+
+**Proposed solution**
+What you'd like to see added or changed.
+
+**Alternatives considered**
+Any alternative approaches you've looked at.
+EOF
+  msg "✅ Issue templates created."
+}
+
+write_pr_template() {
+  local pr_file=".github/pull_request_template.md"
+  if [[ -f "$pr_file" ]]; then
+    msg "✅ $pr_file already exists. Skipping."
+    return 0
+  fi
+  msg "📋 Writing $pr_file..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $pr_file"
+    return 0
+  fi
+  mkdir -p .github
+  cat >"$pr_file" <<'EOF'
+## Summary
+
+<!-- What does this PR do and why? -->
+
+## Changes
+
+-
+
+## Test plan
+
+- [ ] Tested locally
+- [ ] No secrets or credentials introduced
+- [ ] CHANGELOG.md updated (if applicable)
+
+## Related issues
+
+Closes #
+EOF
+  msg "✅ $pr_file created."
+}
+
+write_codeowners() {
+  local co_file=".github/CODEOWNERS"
+  if [[ -f "$co_file" ]]; then
+    msg "✅ $co_file already exists. Skipping."
+    return 0
+  fi
+  msg "👤 Writing $co_file..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "DRY RUN: write $co_file (owner from git config user.name)"
+    return 0
+  fi
+  local gh_user
+  gh_user="$(gh api user --jq '.login' 2>/dev/null || git config user.name 2>/dev/null || echo "you")"
+  mkdir -p .github
+  cat >"$co_file" <<EOF
+# Default owner for all files — update per directory as needed
+* @${gh_user}
+EOF
+  msg "✅ $co_file created (owner: @${gh_user})."
+}
+
 enable_github_secret_scanning() {
   command -v gh >/dev/null 2>&1 || {
     msg "⚠️ gh not found. Skipping secret scanning enablement."
@@ -713,10 +842,14 @@ setup_security_files() {
   install_pre_commit_hook
   write_github_actions_workflow
   write_release_workflow
+  write_dependabot
   write_changelog
   write_license
   write_readme
   write_contributing
+  write_issue_templates
+  write_pr_template
+  write_codeowners
 }
 
 run_audit() {
@@ -827,6 +960,38 @@ run_audit() {
     always_msg "  ${GREEN}✅${RESET}  CONTRIBUTING.md                  present"
   else
     always_msg "  ${YELLOW}⚠️${RESET}   CONTRIBUTING.md                  missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # dependabot
+  if [[ -f ".github/dependabot.yml" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/dependabot.yml           present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .github/dependabot.yml           missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # issue templates
+  if [[ -f ".github/ISSUE_TEMPLATE/bug_report.md" ]] || [[ -d ".github/ISSUE_TEMPLATE" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/ISSUE_TEMPLATE/          present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .github/ISSUE_TEMPLATE/          missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # PR template
+  if [[ -f ".github/pull_request_template.md" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/pull_request_template.md present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .github/pull_request_template.md missing  ${DIM}→ commit_gh --harden${RESET}"
+    issues=$((issues + 1))
+  fi
+
+  # CODEOWNERS
+  if [[ -f ".github/CODEOWNERS" ]]; then
+    always_msg "  ${GREEN}✅${RESET}  .github/CODEOWNERS               present"
+  else
+    always_msg "  ${YELLOW}⚠️${RESET}   .github/CODEOWNERS               missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
   fi
 
