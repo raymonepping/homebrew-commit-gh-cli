@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.3.0"
+VERSION="2.3.2"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -1007,7 +1007,7 @@ populate_changelog() {
   fi
 
   # ── Collect conventional-commit entries from git log ──────────
-  local -a _added _fixed _changed _security
+  local -a _added=() _fixed=() _changed=() _security=()
   while IFS= read -r _subj; do
     [[ -z "$_subj" ]] && continue
     [[ "$_subj" =~ ^Merge[[:space:]] ]] && continue
@@ -1031,10 +1031,10 @@ populate_changelog() {
 
   {
     printf '## [%s] - %s\n' "$new_version" "$date_str"
-    [[ ${#_added[@]} -gt 0 ]]    && { printf '\n### Added\n\n';    printf '- %s\n' "${_added[@]}"; }
-    [[ ${#_fixed[@]} -gt 0 ]]    && { printf '\n### Fixed\n\n';    printf '- %s\n' "${_fixed[@]}"; }
-    [[ ${#_changed[@]} -gt 0 ]]  && { printf '\n### Changed\n\n';  printf '- %s\n' "${_changed[@]}"; }
-    [[ ${#_security[@]} -gt 0 ]] && { printf '\n### Security\n\n'; printf '- %s\n' "${_security[@]}"; }
+    [[ ${#_added[@]} -gt 0 ]]    && { printf '\n### Added\n\n';    printf '%s\n' "${_added[@]/#/- }"; }
+    [[ ${#_fixed[@]} -gt 0 ]]    && { printf '\n### Fixed\n\n';    printf '%s\n' "${_fixed[@]/#/- }"; }
+    [[ ${#_changed[@]} -gt 0 ]]  && { printf '\n### Changed\n\n';  printf '%s\n' "${_changed[@]/#/- }"; }
+    [[ ${#_security[@]} -gt 0 ]] && { printf '\n### Security\n\n'; printf '%s\n' "${_security[@]/#/- }"; }
   } > "$_section"
 
   # ── Rewrite CHANGELOG: insert new section after [Unreleased] ──
