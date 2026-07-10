@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.24"
+VERSION="2.0.25"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -241,7 +241,11 @@ unstage_gitignored_files() {
 
 unstage_blocked_files() {
   local blocked
-  blocked="$(git diff --cached --name-only 2>/dev/null \
+  # --diff-filter=ACMR: only Added/Copied/Modified/Renamed — skip Deletions.
+  # Deletions are already staged by unstage_gitignored_files and must stay staged
+  # so they get committed (removing the file from tracking). Restoring them would
+  # undo that deletion and cause the warning to repeat on every subsequent run.
+  blocked="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null \
     | grep -E "$COMMIT_BLOCKED_PATTERN" \
     | grep -v '\.env\.example$' \
     | grep -v '\.env\.sample$' \
@@ -250,14 +254,8 @@ unstage_blocked_files() {
   msg "⚠️ Unstaging sensitive file(s) — add to .gitignore to prevent restaging:"
   while IFS= read -r f; do
     msg "   🚫 $f"
-    # git restore --staged requires HEAD; use git rm --cached for new/empty-repo files
-    if git rev-parse HEAD >/dev/null 2>&1 && git cat-file -e "HEAD:$f" 2>/dev/null; then
-      git restore --staged "$f" >/dev/null 2>&1 \
-        || msg "   ⚠️ Could not unstage $f — run: git restore --staged \"$f\""
-    else
-      git rm --cached "$f" >/dev/null 2>&1 \
-        || msg "   ⚠️ Could not unstage $f — run: git rm --cached \"$f\""
-    fi
+    git rm --cached "$f" >/dev/null 2>&1 \
+      || msg "   ⚠️ Could not unstage $f — run: git rm --cached \"$f\""
   done <<< "$blocked"
 }
 
