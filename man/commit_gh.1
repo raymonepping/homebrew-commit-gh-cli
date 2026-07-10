@@ -1,4 +1,4 @@
-.TH COMMIT_GH 1 "July 2026" "commit_gh 2.4.0" "User Commands"
+.TH COMMIT_GH 1 "July 2026" "commit_gh 2.5.0" "User Commands"
 .SH NAME
 commit_gh \- secure git commits, releases, and repository hardening
 .SH SYNOPSIS
@@ -164,6 +164,25 @@ Create (or update) the standard set of GitHub issue labels on the remote
 repository via the GitHub CLI.
 Idempotent: existing labels are updated with the canonical colour and description.
 Requires admin access to the repository.
+.TP
+.BR \-\-changelog " [" \fIpatch\fR|\fIminor\fR|\fImajor\fR|\fIx.y.z\fR ]
+Preview what the next CHANGELOG entry would look like without writing anything.
+Reads \fBgit log\fR since the last tag and maps conventional commit prefixes
+to sections (Added, Fixed, Changed, Security) exactly as \fB\-\-release\fR would.
+The bump type defaults to \fIpatch\fR when omitted.
+No files are modified.
+.TP
+.BR \-\-milestone " [" \fIpatch\fR|\fIminor\fR|\fImajor\fR|\fIx.y.z\fR ]
+Create a GitHub milestone for the next version via the GitHub API.
+Computes the target version from the \fIVERSION\fR file using the supplied
+bump type (default: \fIpatch\fR), or accepts an explicit version such as \fI2.1.0\fR.
+If the milestone already exists, its URL is printed without error.
+Requires admin access to the repository.
+.TP
+.B \-\-contributors
+Generate or overwrite \fICONTRIBUTORS.md\fR from \fBgit shortlog\fR output.
+Contributors are listed in descending commit-count order.
+The file is regenerated on every run so it stays current as history grows.
 .TP
 .BR \-\-bump " " \fIpatch\fR|\fIminor\fR|\fImajor\fR
 Create a new annotated git tag by incrementing the latest existing tag.

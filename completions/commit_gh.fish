@@ -47,6 +47,11 @@ complete -c commit_gh -l doctor             -d 'Check developer environment — 
 complete -c commit_gh -l rollback           -d 'Delete a GitHub release and its tag (default: latest)' -r
 complete -c commit_gh -l sign               -d 'Enable GPG or SSH commit signing — global config plus CI workflow'
 complete -c commit_gh -l labels             -d 'Create standard GitHub issue labels on remote (idempotent)'
+complete -c commit_gh -l changelog          -d 'Preview next CHANGELOG entry without writing anything' \
+  -r -a 'patch minor major'
+complete -c commit_gh -l milestone          -d 'Create a GitHub milestone for the next version' \
+  -r -a 'patch minor major'
+complete -c commit_gh -l contributors       -d 'Generate or update CONTRIBUTORS.md from git history'
 complete -c commit_gh -l bump               -d 'Create a new git tag from the latest tag' \
   -r -a 'patch minor major'
 complete -c commit_gh -l preview            -d 'Preview next --bump tag without creating it'

@@ -154,6 +154,9 @@ Flags that share a category can be combined freely. Destructive flags (`--rollba
 | Flag | Description |
 | ---- | ----------- |
 | `--labels` | Create / update the standard GitHub issue label set on the remote repo. |
+| `--changelog [bump]` | Preview what the next CHANGELOG entry would look like without writing anything. Bump type defaults to `patch`. |
+| `--milestone [bump]` | Create a GitHub milestone for the next version. Bump type defaults to `patch`. |
+| `--contributors` | Generate or overwrite `CONTRIBUTORS.md` from `git shortlog`. Regenerated on every run. |
 | `--doctor` | Check the developer environment: bash version, git config, gitleaks, gh auth, SSH agent. |
 | `--bump patch\|minor\|major` | Create a new annotated git tag from the latest tag. No file changes. |
 | `--preview` | Preview the tag that `--bump` would create without creating it. |
@@ -217,7 +220,7 @@ commit_gh --release minor --dry-run
 ```
 
 Flags that run exclusively (they exit immediately and cannot be combined):
-`--rollback`, `--scan`, `--read-version-only`
+`--rollback`, `--scan`, `--read-version-only`, `--changelog`
 
 ---
 

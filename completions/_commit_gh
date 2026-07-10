@@ -35,6 +35,9 @@ _commit_gh() {
     '--rollback=[delete a GitHub release and its tag (default: latest tag)]:tag' \
     '--sign[enable GPG or SSH commit signing — global config plus CI workflow]' \
     '--labels[create standard GitHub issue labels on remote — idempotent]' \
+    '--changelog=[preview next CHANGELOG entry without writing anything (default: patch)]:bump type:(patch minor major)' \
+    '--milestone=[create a GitHub milestone for the next version (default: patch)]:bump type:(patch minor major)' \
+    '--contributors[generate or update CONTRIBUTORS.md from git history]' \
     '--bump=[create a new git tag from the latest tag]:bump type:(patch minor major)' \
     '--preview[preview next --bump tag without creating it]' \
     '--verify[run verification checks (clean tree, branch, version)]'

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.4.2"
+VERSION="2.5.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -75,6 +75,11 @@ ROLLBACK_TAG=""             # --rollback [tag]: delete a release tag + GitHub re
 SIGN_MODE=false             # --sign: configure GPG/SSH commit signing
 LABELS_MODE=false           # --labels: create standard GitHub issue labels
 
+# v2.5 flags
+CHANGELOG_PREVIEW_BUMP=""   # --changelog [patch|minor|major|x.y.z]: preview next release entry
+MILESTONE_BUMP=""           # --milestone [patch|minor|major|x.y.z]: create GitHub milestone
+CONTRIBUTORS_MODE=false     # --contributors: generate/update CONTRIBUTORS.md from git history
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -144,6 +149,9 @@ usage() {
     "  ${BOLD}--rollback${RESET} ${YELLOW}[tag]${RESET}          Delete a GitHub release and its tag  ${DIM}(default: latest tag)${RESET}" \
     "  ${BOLD}--sign${RESET}                   Enable GPG or SSH commit signing  ${DIM}(global config + CI workflow)${RESET}" \
     "  ${BOLD}--labels${RESET}                 Create standard GitHub issue labels on remote  ${DIM}(idempotent)${RESET}" \
+    "  ${BOLD}--changelog${RESET} ${YELLOW}[bump]${RESET}        Preview next CHANGELOG entry without writing anything  ${DIM}(default: patch)${RESET}" \
+    "  ${BOLD}--milestone${RESET} ${YELLOW}[bump]${RESET}        Create a GitHub milestone for the next version  ${DIM}(default: patch)${RESET}" \
+    "  ${BOLD}--contributors${RESET}           Generate or update CONTRIBUTORS.md from git history" \
     "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}  Create a git tag from latest tag  ${DIM}(no file changes)${RESET}" \
     "  ${BOLD}--preview${RESET}                Preview next --bump tag without creating it" \
     "  ${BOLD}--verify${RESET}                 Run verification checks (clean tree, branch, version)" \
@@ -167,6 +175,10 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --rollback v2.3.0" \
     "  ${CYAN}commit_gh${RESET} --sign" \
     "  ${CYAN}commit_gh${RESET} --labels" \
+    "  ${CYAN}commit_gh${RESET} --changelog" \
+    "  ${CYAN}commit_gh${RESET} --changelog minor" \
+    "  ${CYAN}commit_gh${RESET} --milestone" \
+    "  ${CYAN}commit_gh${RESET} --contributors" \
     "" \
     "  $sep" \
     "  ${DIM}Full documentation:  man commit_gh${RESET}" \
@@ -211,6 +223,25 @@ while [[ $# -gt 0 ]]; do
     ;;
   --sign) SIGN_MODE=true ;;
   --labels) LABELS_MODE=true ;;
+  --changelog)
+    if [[ "${2:-}" =~ ^(patch|minor|major)$ ]]; then
+      CHANGELOG_PREVIEW_BUMP="$2"; shift
+    elif [[ "${2:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      CHANGELOG_PREVIEW_BUMP="$2"; shift
+    else
+      CHANGELOG_PREVIEW_BUMP="patch"
+    fi
+    ;;
+  --milestone)
+    if [[ "${2:-}" =~ ^(patch|minor|major)$ ]]; then
+      MILESTONE_BUMP="$2"; shift
+    elif [[ "${2:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      MILESTONE_BUMP="$2"; shift
+    else
+      MILESTONE_BUMP="patch"
+    fi
+    ;;
+  --contributors) CONTRIBUTORS_MODE=true ;;
   --force) RELEASE_FORCE=true ;;
   --no-release) RELEASE_NO_RELEASE=true ;;
   --generate-notes) RELEASE_GENERATE_NOTES=true ;;
@@ -1688,7 +1719,18 @@ create_github_release() {
 
   msg "📦 Creating GitHub release $tag..."
   if [[ "$RELEASE_GENERATE_NOTES" == true ]]; then
-    gh release create "$tag" --title "$tag" --generate-notes
+    local _release_url
+    _release_url="$(gh release create "$tag" --title "$tag" --generate-notes)"
+    msg "$_release_url"
+    local _body
+    _body="$(gh release view "$tag" --json body --jq '.body' 2>/dev/null || true)"
+    if [[ -n "$_body" ]]; then
+      msg ""
+      msg "${BOLD}  📝 Generated release notes:${RESET}"
+      while IFS= read -r _line; do
+        msg "  ${DIM}${_line}${RESET}"
+      done <<< "$_body"
+    fi
   else
     gh release create "$tag" --title "$tag" --notes "Release $tag"
   fi
@@ -2118,6 +2160,217 @@ setup_labels() {
   always_msg ""
 }
 
+preview_changelog() {
+  local bump="${1:-patch}"
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+
+  local vf_version new_version
+  vf_version="$([[ -f "$VERSION_FILE" ]] && cat "$VERSION_FILE" || echo "0.0.0")"
+  read_semver "$vf_version" || die "Invalid VERSION '$vf_version'. Expected X.Y.Z"
+
+  if [[ "$bump" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    new_version="$bump"
+  else
+    new_version="$(bump_semver "$bump" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
+  fi
+
+  local date_str prev_tag log_range
+  date_str="$(date +%Y-%m-%d)"
+  prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 2>/dev/null || true)"
+  [[ -n "$prev_tag" ]] && log_range="${prev_tag}..HEAD" || log_range="HEAD"
+
+  local -a _added=() _fixed=() _changed=() _security=()
+  while IFS= read -r _subj; do
+    [[ -z "$_subj" ]] && continue
+    [[ "$_subj" =~ ^Merge[[:space:]] ]] && continue
+    [[ "$_subj" =~ ^chore:[[:space:]]release ]] && continue
+    case "$_subj" in
+      feat:*|feat\(*\):*)     _added+=("${_subj#*: }") ;;
+      fix:*|fix\(*\):*)       _fixed+=("${_subj#*: }") ;;
+      security:*)             _security+=("${_subj#*: }") ;;
+      chore:*|refactor:*|perf:*|build:*|ci:*|docs:*)
+                              _changed+=("${_subj#*: }") ;;
+    esac
+  done < <(git log --pretty=format:"%s" $log_range 2>/dev/null || true)
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  always_msg ""
+  always_msg "${BOLD}📋 commit_gh changelog preview${RESET}"
+  always_msg "$sep"
+  [[ -n "$prev_tag" ]] && always_msg "  ${DIM}Since: ${prev_tag}..HEAD${RESET}" \
+                       || always_msg "  ${DIM}Since: beginning of history${RESET}"
+  always_msg ""
+  always_msg "## [${new_version}] - ${date_str}"
+
+  if [[ ${#_added[@]} -eq 0 && ${#_fixed[@]} -eq 0 && \
+        ${#_changed[@]} -eq 0 && ${#_security[@]} -eq 0 ]]; then
+    always_msg ""
+    always_msg "  ${YELLOW}(no conventional commits found — nothing to add to CHANGELOG)${RESET}"
+    always_msg "  ${DIM}Tip: use feat:, fix:, security:, chore:, docs: prefixes${RESET}"
+  else
+    if [[ ${#_added[@]} -gt 0 ]]; then
+      always_msg ""; always_msg "### Added"; always_msg ""
+      for _item in "${_added[@]}"; do always_msg "- ${_item}"; done
+    fi
+    if [[ ${#_fixed[@]} -gt 0 ]]; then
+      always_msg ""; always_msg "### Fixed"; always_msg ""
+      for _item in "${_fixed[@]}"; do always_msg "- ${_item}"; done
+    fi
+    if [[ ${#_changed[@]} -gt 0 ]]; then
+      always_msg ""; always_msg "### Changed"; always_msg ""
+      for _item in "${_changed[@]}"; do always_msg "- ${_item}"; done
+    fi
+    if [[ ${#_security[@]} -gt 0 ]]; then
+      always_msg ""; always_msg "### Security"; always_msg ""
+      for _item in "${_security[@]}"; do always_msg "- ${_item}"; done
+    fi
+  fi
+
+  always_msg ""
+  always_msg "$sep"
+  always_msg "  ${DIM}Preview only — no files modified.${RESET}"
+  always_msg "  ${DIM}Run ${CYAN}commit_gh --release ${bump}${RESET}${DIM} to generate the actual release.${RESET}"
+  always_msg ""
+}
+
+setup_milestone() {
+  local bump="${1:-patch}"
+  command -v gh >/dev/null 2>&1 || die "gh CLI not found. Install with: brew install gh"
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  has_origin_remote || die "No origin remote found. Run --init-remote first."
+
+  local remote_url repo_slug
+  remote_url="$(git remote get-url origin 2>/dev/null || echo "")"
+  repo_slug="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')"
+  [[ -z "$repo_slug" || "$repo_slug" == "$remote_url" ]] && die "Could not determine repo slug from origin URL."
+
+  local vf_version new_version
+  vf_version="$([[ -f "$VERSION_FILE" ]] && cat "$VERSION_FILE" || echo "0.0.0")"
+  read_semver "$vf_version" || die "Invalid VERSION '$vf_version'. Expected X.Y.Z"
+
+  if [[ "$bump" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    new_version="$bump"
+  else
+    new_version="$(bump_semver "$bump" "$SEMVER_MAJOR" "$SEMVER_MINOR" "$SEMVER_PATCH")"
+  fi
+
+  local milestone_title="v${new_version}"
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  always_msg ""
+  always_msg "${BOLD}🎯 commit_gh milestone${RESET}"
+  always_msg "$sep"
+  always_msg "  Repo:      ${BOLD}${repo_slug}${RESET}"
+  always_msg "  Milestone: ${BOLD}${milestone_title}${RESET}"
+  always_msg ""
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "  DRY RUN: gh api repos/$repo_slug/milestones --method POST --field title=\"$milestone_title\""
+    always_msg "$sep"
+    always_msg "  ${DIM}DRY RUN: would create milestone ${milestone_title} on ${repo_slug}${RESET}"
+    always_msg ""
+    return 0
+  fi
+
+  local ms_url
+  if ms_url="$(gh api "repos/$repo_slug/milestones" \
+    --method POST \
+    --field "title=$milestone_title" \
+    --field "description=Tracks work for release $milestone_title" \
+    --jq '.html_url' 2>/dev/null)"; then
+    always_msg "  ${GREEN}✅${RESET}  Milestone created"
+    always_msg "  ${DIM}${ms_url}${RESET}"
+  else
+    local existing
+    existing="$(gh api "repos/$repo_slug/milestones" \
+      --jq ".[] | select(.title == \"$milestone_title\") | .html_url" 2>/dev/null || true)"
+    if [[ -n "$existing" ]]; then
+      always_msg "  ${YELLOW}⚠️${RESET}   Milestone ${milestone_title} already exists"
+      always_msg "  ${DIM}${existing}${RESET}"
+    else
+      always_msg "  ${RED}❌${RESET}  Failed to create milestone  ${DIM}(check admin access on ${repo_slug})${RESET}"
+    fi
+  fi
+
+  always_msg ""
+  always_msg "$sep"
+  always_msg ""
+}
+
+generate_contributors() {
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  local out_file="CONTRIBUTORS.md"
+
+  always_msg ""
+  always_msg "${BOLD}👥 commit_gh contributors${RESET}"
+  always_msg "$sep"
+
+  if ! git rev-parse HEAD >/dev/null 2>&1; then
+    always_msg "  ${YELLOW}⚠️${RESET}  No commits yet in this repository."
+    always_msg ""
+    return 0
+  fi
+
+  local -a _names=() _counts=()
+  while IFS=$'\t' read -r _count _name; do
+    _count="${_count// /}"
+    _names+=("$_name")
+    _counts+=("$_count")
+  done < <(git shortlog -sn HEAD 2>/dev/null || true)
+
+  local _total="${#_names[@]}"
+  if [[ $_total -eq 0 ]]; then
+    always_msg "  ${YELLOW}⚠️${RESET}  No contributors found."
+    always_msg ""
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "  DRY RUN: would write $out_file (${_total} contributor(s))"
+    always_msg ""
+    for (( i=0; i<_total; i++ )); do
+      always_msg "  ${DIM}${_counts[$i]} commits${RESET}  ${BOLD}${_names[$i]}${RESET}"
+    done
+    always_msg ""
+    always_msg "$sep"
+    always_msg "  ${DIM}DRY RUN: no files written${RESET}"
+    always_msg ""
+    return 0
+  fi
+
+  local _action="Updated"
+  [[ ! -f "$out_file" ]] && _action="Created"
+
+  {
+    printf '# Contributors\n\n'
+    printf 'Thank you to everyone who has contributed to this project!\n\n'
+    printf '| Commits | Name |\n'
+    printf '| ------- | ---- |\n'
+    for (( i=0; i<_total; i++ )); do
+      printf '| %s | %s |\n' "${_counts[$i]}" "${_names[$i]}"
+    done
+    printf '\n'
+    printf '_Generated by [commit_gh](https://github.com/raymonepping/homebrew-commit-gh-cli) on %s._\n' \
+      "$(date +%Y-%m-%d)"
+  } > "$out_file"
+
+  always_msg "  ${GREEN}✅${RESET}  ${_action} ${out_file}  ${DIM}(${_total} contributor(s))${RESET}"
+  always_msg ""
+  for (( i=0; i<_total; i++ )); do
+    always_msg "  ${DIM}${_counts[$i]} commits${RESET}  ${BOLD}${_names[$i]}${RESET}"
+  done
+
+  always_msg ""
+  always_msg "$sep"
+  always_msg "  ${GREEN}${BOLD}${_total} contributor(s) written to ${out_file}.${RESET} 👥"
+  always_msg ""
+}
+
 # ----------------------------
 # Standalone modes — combinable flags run in sequence, then exit.
 # Exclusive flags (rollback, read-version-only, scan) exit immediately.
@@ -2160,6 +2413,11 @@ if [[ -n "$ROLLBACK_TAG" ]]; then
   exit 0
 fi
 
+if [[ -n "$CHANGELOG_PREVIEW_BUMP" ]]; then
+  preview_changelog "$CHANGELOG_PREVIEW_BUMP"
+  exit 0
+fi
+
 # Combinable standalone modes
 if [[ "$PROTECT_MODE" == true ]]; then
   in_git_repo || die "Not inside a git repository. --protect requires an existing repo."
@@ -2182,6 +2440,18 @@ if [[ "$LABELS_MODE" == true ]]; then
   in_git_repo || die "Not inside a git repository. --labels requires an existing repo."
   cd "$(git rev-parse --show-toplevel)" || exit 1
   setup_labels
+  _ran_standalone=true
+fi
+
+if [[ -n "$MILESTONE_BUMP" ]]; then
+  setup_milestone "$MILESTONE_BUMP"
+  _ran_standalone=true
+fi
+
+if [[ "$CONTRIBUTORS_MODE" == true ]]; then
+  in_git_repo || die "Not inside a git repository. --contributors requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  generate_contributors
   _ran_standalone=true
 fi
 

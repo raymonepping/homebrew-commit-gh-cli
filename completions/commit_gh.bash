@@ -31,6 +31,7 @@ _commit_gh() {
     --init-repo --init-remote --public --private
     --harden --audit --scan --no-scan --no-hook --secret-scanning
     --protect --doctor --rollback --sign --labels
+    --changelog --milestone --contributors
     --release --force --no-release --generate-notes
     --read-version-only --version-file
     --branch --message --tree
