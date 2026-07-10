@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.0.19"
+VERSION="2.0.20"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -225,6 +225,23 @@ in_git_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 # Security helpers
 # ----------------------------
 gitleaks_available() { command -v gitleaks >/dev/null 2>&1; }
+
+COMMIT_BLOCKED_PATTERN='\.(env|pem|key|p12|pfx|cer|crt|der|vault)$|^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$|_(rsa|dsa|ecdsa|ed25519)$|^\.vault\.'
+
+unstage_blocked_files() {
+  local blocked
+  blocked="$(git diff --cached --name-only 2>/dev/null \
+    | grep -E "$COMMIT_BLOCKED_PATTERN" \
+    | grep -v '\.env\.example$' \
+    | grep -v '\.env\.sample$' \
+    || true)"
+  [[ -z "$blocked" ]] && return 0
+  msg "⚠️ Unstaging sensitive file(s) — add to .gitignore to prevent restaging:"
+  while IFS= read -r f; do
+    msg "   🚫 $f"
+    git restore --staged "$f" >/dev/null 2>&1 || true
+  done <<< "$blocked"
+}
 
 write_gitignore() {
   local gi_path=".gitignore"
@@ -1046,12 +1063,17 @@ run_audit() {
     issues=$((issues + 1))
   fi
 
-  # .gitignore with .env coverage
-  if [[ -f ".gitignore" ]] && grep -qE '^\.env$|^\.env\b|^\*\.env$' ".gitignore" 2>/dev/null; then
-    always_msg "  ${GREEN}✅${RESET}  .gitignore                       present (.env covered)"
-  elif [[ -f ".gitignore" ]]; then
-    always_msg "  ${YELLOW}⚠️${RESET}   .gitignore                       present but .env not listed  ${DIM}→ commit_gh --harden${RESET}"
-    issues=$((issues + 1))
+  # .gitignore with .env and .vault.* coverage
+  if [[ -f ".gitignore" ]]; then
+    local _gi_missing=()
+    grep -qE '^\.env$|^\.env\b|^\*\.env$' ".gitignore" 2>/dev/null || _gi_missing+=(".env")
+    grep -qE '^\.vault\.\*$' ".gitignore" 2>/dev/null || _gi_missing+=(".vault.*")
+    if [[ ${#_gi_missing[@]} -eq 0 ]]; then
+      always_msg "  ${GREEN}✅${RESET}  .gitignore                       present (.env and .vault.* covered)"
+    else
+      always_msg "  ${YELLOW}⚠️${RESET}   .gitignore                       missing: ${_gi_missing[*]}  ${DIM}→ commit_gh --harden${RESET}"
+      issues=$((issues + 1))
+    fi
   else
     always_msg "  ${RED}❌${RESET}  .gitignore                       missing  ${DIM}→ commit_gh --harden${RESET}"
     issues=$((issues + 1))
@@ -1162,6 +1184,10 @@ run_audit() {
 ensure_repo() {
   if in_git_repo; then
     cd "$(git rev-parse --show-toplevel)" || exit 1
+    if [[ "$INIT_REPO" == true ]]; then
+      # Already initialised — idempotently apply any missing security files
+      setup_security_files
+    fi
     return 0
   fi
 
@@ -1232,8 +1258,22 @@ ensure_origin_remote() {
     return 0
   fi
 
-  gh repo create "$repo_name" --source "$repo_root" $visibility_flag --push
-  msg "✅ Remote created and initial push done."
+  gh repo create "$repo_name" --source "$repo_root" $visibility_flag --push || true
+
+  # gh --push exits non-zero when no commits exist; repo is created on GitHub but
+  # origin may not be set locally — add it manually so try_push() can handle it.
+  if has_origin_remote; then
+    msg "✅ Remote created and initial push done."
+  else
+    local gh_user
+    gh_user="$(gh api user --jq '.login' 2>/dev/null || echo "")"
+    if [[ -n "$gh_user" ]]; then
+      git remote add origin "git@github.com:${gh_user}/${repo_name}.git"
+      msg "✅ GitHub repo created. Origin set — will push after commit."
+    else
+      msg "⚠️ GitHub repo created but could not set origin. Run: git remote add origin <url>"
+    fi
+  fi
 }
 
 ensure_no_rebase_or_merge() {
@@ -1466,20 +1506,23 @@ run_read_version() {
 }
 
 # ----------------------------
-# Standalone modes (audit / harden / scan — all exit after running)
+# Standalone modes (harden → audit → scan — all exit after running)
+# Run harden before audit so --harden --audit hardens first, then reports.
 # ----------------------------
-if [[ "$AUDIT_MODE" == true ]]; then
-  run_audit
-  exit $?
-fi
-
 if [[ "$HARDEN_MODE" == true ]]; then
   in_git_repo || die "Not inside a git repository. --harden requires an existing repo."
   cd "$(git rev-parse --show-toplevel)" || exit 1
   msg "🛡️ Hardening repo: $(basename "$(pwd)")"
   setup_security_files
-  always_msg "🎉 Done. Run ${CYAN}commit_gh --audit${RESET} to verify."
-  exit 0
+  if [[ "$AUDIT_MODE" != true ]]; then
+    always_msg "🎉 Done. Run ${CYAN}commit_gh --audit${RESET} to verify."
+    exit 0
+  fi
+fi
+
+if [[ "$AUDIT_MODE" == true ]]; then
+  run_audit
+  exit $?
 fi
 
 if [[ "$READ_VERSION_ONLY" == true ]]; then
@@ -1678,6 +1721,11 @@ if [[ "$DRY_RUN" == true ]]; then
   msg "DRY RUN: git add ."
 else
   git add . >/dev/null
+fi
+
+# Auto-unstage sensitive filenames before secret scan
+if [[ "$DRY_RUN" != true ]]; then
+  unstage_blocked_files
 fi
 
 # Gitleaks staged scan before commit (skippable with --no-scan)
