@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.6.3"
+VERSION="2.8.0"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -84,6 +84,10 @@ CONTRIBUTORS_MODE=false     # --contributors: generate/update CONTRIBUTORS.md fr
 PR_MODE=false               # --pr: create a pull request after commit+push
 PR_DRAFT=false              # --draft: open the PR as a draft (use with --pr)
 
+# v2.7 flags
+HISTORY_MODE=false          # --history: show release + commit history
+JSON_OUTPUT=false           # --json: output --history as JSON (use with --history)
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -158,6 +162,8 @@ usage() {
     "  ${BOLD}--changelog${RESET} ${YELLOW}[bump]${RESET}        Preview next CHANGELOG entry without writing anything  ${DIM}(default: patch)${RESET}" \
     "  ${BOLD}--milestone${RESET} ${YELLOW}[bump]${RESET}        Create a GitHub milestone for the next version  ${DIM}(default: patch)${RESET}" \
     "  ${BOLD}--contributors${RESET}           Generate or update CONTRIBUTORS.md from git history" \
+    "  ${BOLD}--history${RESET}                Show release and commit history in descending order" \
+    "  ${BOLD}--json${RESET}                   Output --history as JSON  ${DIM}(use with --history)${RESET}" \
     "  ${BOLD}--bump${RESET} ${YELLOW}patch|minor|major${RESET}  Create a git tag from latest tag  ${DIM}(no file changes)${RESET}" \
     "  ${BOLD}--preview${RESET}                Preview next --bump tag without creating it" \
     "  ${BOLD}--verify${RESET}                 Run verification checks (clean tree, branch, version)" \
@@ -187,6 +193,8 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --contributors" \
     "  ${CYAN}commit_gh${RESET} --branch feature/auth --message \"feat: add OAuth login\" --pr" \
     "  ${CYAN}commit_gh${RESET} --pr --draft" \
+    "  ${CYAN}commit_gh${RESET} --history" \
+    "  ${CYAN}commit_gh${RESET} --history --json" \
     "" \
     "  $sep" \
     "  ${DIM}Full documentation:  man commit_gh${RESET}" \
@@ -250,6 +258,8 @@ while [[ $# -gt 0 ]]; do
     fi
     ;;
   --contributors) CONTRIBUTORS_MODE=true ;;
+  --history) HISTORY_MODE=true ;;
+  --json) JSON_OUTPUT=true ;;
   --pr) PR_MODE=true ;;
   --draft) PR_DRAFT=true ;;
   --force) RELEASE_FORCE=true ;;
@@ -2476,6 +2486,161 @@ generate_contributors() {
   always_msg ""
 }
 
+show_history() {
+  local json_mode="${1:-false}"
+
+  in_git_repo || die "Not inside a git repository."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  command -v gh >/dev/null 2>&1 || die "gh CLI not found. Install with: brew install gh"
+  has_origin_remote || die "No origin remote found. Run --init-remote first."
+
+  local repo_slug generated
+  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "unknown")"
+  generated="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  local -a tags=()
+  mapfile -t tags < <(git tag --sort=-version:refname 2>/dev/null \
+                      | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+' | head -20 || true)
+
+  # Pre-fetch all GH release metadata in one API call
+  local _releases_json
+  _releases_json="$(gh release list --limit 50 --json tagName,createdAt 2>/dev/null || echo "[]")"
+
+  local -A _rd=() _rp=()
+  while IFS='|' read -r _tn _dt; do
+    [[ -z "$_tn" ]] && continue
+    _rd["$_tn"]="$_dt"
+    _rp["$_tn"]="true"
+  done < <(printf '%s' "$_releases_json" | jq -r '.[] | "\(.tagName)|\(.createdAt[:10])"' 2>/dev/null || true)
+
+  # JSON-escape a string (backslash + double-quote only — sufficient for commit messages)
+  _je() { local s="${1//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+
+  # Detect semver bump type between two tags
+  _bt() {
+    local _cm _cp _pm _pp
+    _cm="$(printf '%s' "$1" | sed 's/v//' | cut -d. -f1)"
+    _cp="$(printf '%s' "$1" | sed 's/v//' | cut -d. -f2)"
+    _pm="$(printf '%s' "$2" | sed 's/v//' | cut -d. -f1)"
+    _pp="$(printf '%s' "$2" | sed 's/v//' | cut -d. -f2)"
+    if   [[ "$_cm" != "$_pm" ]]; then printf 'major'
+    elif [[ "$_cp" != "$_pp" ]]; then printf 'minor'
+    else printf 'patch'
+    fi
+  }
+
+  local sep="${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  if [[ ${#tags[@]} -eq 0 ]]; then
+    always_msg ""
+    always_msg "${BOLD}📦 ${repo_slug} — history${RESET}"
+    always_msg "$sep"
+    always_msg "  ${DIM}No semver tags found in this repository.${RESET}"
+    always_msg ""
+    return 0
+  fi
+
+  if [[ "$json_mode" == true ]]; then
+    printf '{\n'
+    printf '  "repo": "%s",\n' "$(_je "$repo_slug")"
+    printf '  "generated": "%s",\n' "$generated"
+    printf '  "releases": ['
+
+    local _first=true
+
+    # Unreleased commits (HEAD since latest tag)
+    local -a _uc=()
+    mapfile -t _uc < <(git log --pretty=format:"%h|%as|%an|%s" "${tags[0]}..HEAD" 2>/dev/null || true)
+    if [[ ${#_uc[@]} -gt 0 ]]; then
+      printf '\n    {"tag":null,"name":"Unreleased","date":null,"bump":null,"published":false,"commits":['
+      local _cf=true _l
+      for _l in "${_uc[@]}"; do
+        IFS='|' read -r _h _d _a _m <<< "$_l"
+        [[ "$_cf" == true ]] || printf ','
+        _cf=false
+        printf '\n      {"hash":"%s","date":"%s","author":"%s","message":"%s"}' \
+          "$_h" "$_d" "$(_je "$_a")" "$(_je "$_m")"
+      done
+      [[ "$_cf" == false ]] && printf '\n    '
+      printf ']}'
+      _first=false
+    fi
+
+    local i
+    for (( i=0; i<${#tags[@]}; i++ )); do
+      local _t="${tags[$i]}" _p="${tags[$((i+1))]:-}"
+      local _bump="" _rng
+      [[ -n "$_p" ]] && _bump="$(_bt "$_t" "$_p")"
+      local _date="${_rd[$_t]:-$(git log -1 --pretty=format:"%as" "$_t" 2>/dev/null || echo "")}"
+      local _pub="${_rp[$_t]:-false}"
+      [[ -n "$_p" ]] && _rng="${_p}..${_t}" || _rng="$_t"
+
+      [[ "$_first" == true ]] || printf ','
+      _first=false
+      printf '\n    {"tag":"%s","name":"%s","date":"%s","bump":"%s","published":%s,"commits":[' \
+        "$(_je "$_t")" "$(_je "$_t")" "$_date" "$_bump" "$_pub"
+
+      local _cf=true
+      while IFS='|' read -r _h _d _a _m; do
+        [[ "$_cf" == true ]] || printf ','
+        _cf=false
+        printf '\n      {"hash":"%s","date":"%s","author":"%s","message":"%s"}' \
+          "$_h" "$_d" "$(_je "$_a")" "$(_je "$_m")"
+      done < <(git log --pretty=format:"%h|%as|%an|%s" "$_rng" 2>/dev/null || true)
+
+      [[ "$_cf" == false ]] && printf '\n    '
+      printf ']}'
+    done
+
+    printf '\n  ]\n}\n'
+
+  else
+    always_msg ""
+    always_msg "${BOLD}📦 ${repo_slug} — history${RESET}"
+    always_msg "$sep"
+
+    # Unreleased commits at the top
+    local -a _uc=()
+    mapfile -t _uc < <(git log --pretty=format:"%h  %as  %s" "${tags[0]}..HEAD" 2>/dev/null || true)
+    if [[ ${#_uc[@]} -gt 0 ]]; then
+      always_msg ""
+      always_msg "  ${BOLD}${YELLOW}Unreleased${RESET}  ${DIM}(${#_uc[@]} commit(s) since ${tags[0]})${RESET}"
+      local j
+      for (( j=0; j<${#_uc[@]}; j++ )); do
+        local _br="├──"; [[ $j -eq $((${#_uc[@]}-1)) ]] && _br="└──"
+        always_msg "  ${DIM}${_br}${RESET} ${_uc[$j]}"
+      done
+    fi
+
+    local i
+    for (( i=0; i<${#tags[@]}; i++ )); do
+      local _t="${tags[$i]}" _p="${tags[$((i+1))]:-}"
+      local _bump_label=""
+      [[ -n "$_p" ]] && _bump_label="  ${DIM}·  $(_bt "$_t" "$_p") release${RESET}"
+      local _date="${_rd[$_t]:-$(git log -1 --pretty=format:"%as" "$_t" 2>/dev/null || echo "")}"
+      local _pub_badge=""
+      [[ "${_rp[$_t]:-false}" == "true" ]] && _pub_badge="  ${DIM}📦${RESET}"
+      local _rng
+      [[ -n "$_p" ]] && _rng="${_p}..${_t}" || _rng="$_t"
+
+      always_msg ""
+      always_msg "  ${BOLD}${GREEN}${_t}${RESET}  ${DIM}·  ${_date}${RESET}${_bump_label}${_pub_badge}"
+
+      local -a _coms=()
+      mapfile -t _coms < <(git log --pretty=format:"%h  %as  %s" "$_rng" 2>/dev/null || true)
+      local j
+      for (( j=0; j<${#_coms[@]}; j++ )); do
+        local _br="├──"; [[ $j -eq $((${#_coms[@]}-1)) ]] && _br="└──"
+        always_msg "  ${DIM}${_br}${RESET} ${_coms[$j]}"
+      done
+    done
+
+    always_msg ""
+    always_msg "$sep"
+    always_msg ""
+  fi
+}
+
 # ----------------------------
 # Standalone modes — combinable flags run in sequence, then exit.
 # Exclusive flags (rollback, read-version-only, scan) exit immediately.
@@ -2560,6 +2725,11 @@ if [[ "$CONTRIBUTORS_MODE" == true ]]; then
   _ran_standalone=true
 fi
 
+if [[ "$HISTORY_MODE" == true ]]; then
+  show_history "$JSON_OUTPUT"
+  exit 0
+fi
+
 if [[ "$_ran_standalone" == true ]]; then
   exit "$_audit_exit"
 fi
@@ -2587,6 +2757,12 @@ fi
 if [[ "$PR_DRAFT" == true && "$PR_MODE" != true ]]; then
   always_msg "⚠️  --draft is a modifier for --pr and has no effect on its own."
   always_msg "   Usage: ${CYAN}commit_gh --pr --draft${RESET}"
+  exit 1
+fi
+
+if [[ "$JSON_OUTPUT" == true && "$HISTORY_MODE" != true ]]; then
+  always_msg "⚠️  --json is a modifier for --history and has no effect on its own."
+  always_msg "   Usage: ${CYAN}commit_gh --history --json${RESET}"
   exit 1
 fi
 

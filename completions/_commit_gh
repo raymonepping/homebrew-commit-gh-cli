@@ -40,6 +40,8 @@ _commit_gh() {
     '--changelog=[preview next CHANGELOG entry without writing anything (default: patch)]:bump type:(patch minor major)' \
     '--milestone=[create a GitHub milestone for the next version (default: patch)]:bump type:(patch minor major)' \
     '--contributors[generate or update CONTRIBUTORS.md from git history]' \
+    '--history[show release and commit history in descending order]' \
+    '--json[output --history as JSON — use with --history]' \
     '--bump=[create a new git tag from the latest tag]:bump type:(patch minor major)' \
     '--preview[preview next --bump tag without creating it]' \
     '--verify[run verification checks (clean tree, branch, version)]'

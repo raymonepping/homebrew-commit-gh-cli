@@ -54,6 +54,8 @@ complete -c commit_gh -l changelog          -d 'Preview next CHANGELOG entry wit
 complete -c commit_gh -l milestone          -d 'Create a GitHub milestone for the next version' \
   -r -a 'patch minor major'
 complete -c commit_gh -l contributors       -d 'Generate or update CONTRIBUTORS.md from git history'
+complete -c commit_gh -l history            -d 'Show release and commit history in descending order'
+complete -c commit_gh -l json               -d 'Output --history as JSON (use with --history)'
 complete -c commit_gh -l bump               -d 'Create a new git tag from the latest tag' \
   -r -a 'patch minor major'
 complete -c commit_gh -l preview            -d 'Preview next --bump tag without creating it'

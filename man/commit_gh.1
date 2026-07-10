@@ -1,4 +1,4 @@
-.TH COMMIT_GH 1 "July 2026" "commit_gh 2.6.0" "User Commands"
+.TH COMMIT_GH 1 "July 2026" "commit_gh 2.7.0" "User Commands"
 .SH NAME
 commit_gh \- secure git commits, releases, and repository hardening
 .SH SYNOPSIS
@@ -195,6 +195,19 @@ Requires admin access to the repository.
 Generate or overwrite \fICONTRIBUTORS.md\fR from \fBgit shortlog\fR output.
 Contributors are listed in descending commit-count order.
 The file is regenerated on every run so it stays current as history grows.
+.TP
+.B \-\-history
+Print a descending list of all semver releases and their commits.
+Each release shows the tag, date, bump type (patch/minor/major), whether
+a GitHub release exists, and the commits that landed in that range.
+Any commits since the latest tag are shown in an \fIUnreleased\fR section at the top.
+.TP
+.B \-\-json
+Output \fB\-\-history\fR as structured JSON instead of the default terminal display.
+The JSON envelope contains \fIrepo\fR, \fIgenerated\fR, and a \fIreleases\fR array.
+Each element carries \fItag\fR, \fIname\fR, \fIdate\fR, \fIbump\fR, \fIpublished\fR, and
+a \fIcommits\fR array of \fI{hash, date, author, message}\fR objects.
+Must be used together with \fB\-\-history\fR.
 .TP
 .BR \-\-bump " " \fIpatch\fR|\fIminor\fR|\fImajor\fR
 Create a new annotated git tag by incrementing the latest existing tag.
