@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC2034
-VERSION="2.8.0"
+VERSION="2.8.1"
 
 supports_color() {
   [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -88,6 +88,12 @@ PR_DRAFT=false              # --draft: open the PR as a draft (use with --pr)
 HISTORY_MODE=false          # --history: show release + commit history
 JSON_OUTPUT=false           # --json: output --history as JSON (use with --history)
 
+# v2.9 flags
+PUBLISH_IMAGE=false         # --publish-image: build + push a container image on --release
+IMAGE_CONTEXT="."           # --image-context <dir>: Docker build context (default: repo root)
+IMAGE_NAME=""               # --image-name <name>: image name (default: repo name)
+IMAGE_REGISTRY="ghcr.io"    # --registry <host>: container registry (default: GHCR)
+
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
 die() {
@@ -143,6 +149,10 @@ usage() {
     "  ${BOLD}--generate-notes${RESET}         Auto-generate release notes from pull requests" \
     "  ${BOLD}--read-version-only${RESET}      Print version inventory (VERSION file, script, tag) and exit" \
     "  ${BOLD}--version-file${RESET} ${YELLOW}<path>${RESET}     Version file for --release  ${DIM}(default: VERSION)${RESET}" \
+    "  ${BOLD}--publish-image${RESET}          Build + push a container image  ${DIM}(use with --release)${RESET}" \
+    "  ${BOLD}--image-context${RESET} ${YELLOW}<dir>${RESET}     Docker build context  ${DIM}(default: .)${RESET}" \
+    "  ${BOLD}--image-name${RESET} ${YELLOW}<name>${RESET}       Image name  ${DIM}(default: repo name)${RESET}" \
+    "  ${BOLD}--registry${RESET} ${YELLOW}<host>${RESET}         Container registry  ${DIM}(default: ghcr.io)${RESET}" \
     "" \
     "  ${BOLD}${GREEN}Commit${RESET}" \
     "  ${BOLD}--branch${RESET} ${YELLOW}<name>${RESET}           Branch for commit and push  ${DIM}(default: current, else main)${RESET}" \
@@ -181,6 +191,7 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --release patch" \
     "  ${CYAN}commit_gh${RESET} --release 2.1.0 --generate-notes" \
     "  ${CYAN}commit_gh${RESET} --release patch --force" \
+    "  ${CYAN}commit_gh${RESET} --release patch --publish-image --image-context home --image-name vault-reference-portal" \
     "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --read-version-only" \
     "  ${CYAN}commit_gh${RESET} --release minor --dry-run" \
@@ -302,6 +313,22 @@ while [[ $# -gt 0 ]]; do
     ;;
   --preview) PREVIEW_MODE=true ;;
   --verify) VERIFY_MODE=true ;;
+  --publish-image) PUBLISH_IMAGE=true ;;
+  --image-context)
+    [[ -n "${2:-}" ]] || die "--image-context requires a value"
+    IMAGE_CONTEXT="$2"
+    shift
+    ;;
+  --image-name)
+    [[ -n "${2:-}" ]] || die "--image-name requires a value"
+    IMAGE_NAME="$2"
+    shift
+    ;;
+  --registry)
+    [[ -n "${2:-}" ]] || die "--registry requires a value"
+    IMAGE_REGISTRY="$2"
+    shift
+    ;;
   --tree)
     if [[ "${2:-}" =~ ^(true|false)$ ]]; then
       [[ "$2" == "true" ]] && GENERATE_TREE=1
@@ -1756,6 +1783,66 @@ create_github_release() {
   fi
 }
 
+publish_image() {
+  local tag="$1"
+  command -v docker >/dev/null 2>&1 || {
+    msg "⚠️ docker not found. Skipping image publish."
+    return 0
+  }
+  command -v gh >/dev/null 2>&1 || {
+    msg "⚠️ gh not found. Skipping image publish."
+    return 0
+  }
+  has_origin_remote || {
+    msg "⚠️ No origin remote. Skipping image publish."
+    return 0
+  }
+
+  local dockerfile="${IMAGE_CONTEXT%/}/Dockerfile"
+  [[ -f "$dockerfile" ]] || {
+    msg "⚠️ No Dockerfile at $dockerfile. Skipping image publish."
+    return 0
+  }
+
+  local name_with_owner owner repo image_name image_ref
+  name_with_owner="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+  [[ -n "$name_with_owner" ]] || {
+    msg "⚠️ Could not resolve repo owner via gh. Skipping image publish."
+    return 0
+  }
+  owner="${name_with_owner%%/*}"
+  repo="${name_with_owner##*/}"
+  image_name="${IMAGE_NAME:-$repo}"
+  image_ref="${IMAGE_REGISTRY}/${owner}/${image_name}"
+
+  if [[ "$IMAGE_REGISTRY" == "ghcr.io" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      msg "  DRY RUN: gh auth token | docker login ghcr.io -u $owner --password-stdin"
+    else
+      gh auth token 2>/dev/null | docker login ghcr.io -u "$owner" --password-stdin >/dev/null 2>&1 \
+        || { msg "⚠️ docker login to ghcr.io failed. Skipping image publish."; return 0; }
+    fi
+  else
+    msg "⚠️ Registry '$IMAGE_REGISTRY' has no built-in auth — assuming you're already logged in."
+  fi
+
+  msg "📦 Building $image_ref:$tag (context: $IMAGE_CONTEXT)..."
+  if [[ "$DRY_RUN" == true ]]; then
+    msg "  DRY RUN: docker build -t $image_ref:$tag -t $image_ref:latest $IMAGE_CONTEXT"
+    msg "  DRY RUN: docker push $image_ref:$tag"
+    msg "  DRY RUN: docker push $image_ref:latest"
+    return 0
+  fi
+
+  docker build -t "$image_ref:$tag" -t "$image_ref:latest" "$IMAGE_CONTEXT" \
+    || { msg "⚠️ docker build failed. Skipping image publish."; return 0; }
+
+  docker push "$image_ref:$tag" || { msg "⚠️ docker push $tag failed."; return 0; }
+  docker push "$image_ref:latest" || { msg "⚠️ docker push latest failed."; return 0; }
+
+  msg "  ${GREEN}✓${RESET} Published $image_ref:$tag and $image_ref:latest"
+}
+
 run_read_version() {
   in_git_repo || die "Not inside a git repository."
   cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -2754,6 +2841,12 @@ if [[ "$RELEASE_FORCE" == true && -z "$RELEASE_BUMP" ]]; then
   exit 1
 fi
 
+if [[ "$PUBLISH_IMAGE" == true && -z "$RELEASE_BUMP" ]]; then
+  always_msg "⚠️  --publish-image is a modifier for --release and has no effect on its own."
+  always_msg "   Usage: ${CYAN}commit_gh --release patch --publish-image${RESET}"
+  exit 1
+fi
+
 if [[ "$PR_DRAFT" == true && "$PR_MODE" != true ]]; then
   always_msg "⚠️  --draft is a modifier for --pr and has no effect on its own."
   always_msg "   Usage: ${CYAN}commit_gh --pr --draft${RESET}"
@@ -2879,6 +2972,9 @@ if [[ -n "$RELEASE_BUMP" ]]; then
   msg "  Commit msg    : $release_commit_msg"
   msg "  GitHub release: $([ "$RELEASE_NO_RELEASE" = true ] && echo "skipped (--no-release)" || ([ "$RELEASE_GENERATE_NOTES" = true ] && echo "yes (--generate-notes)" || echo "yes"))"
   msg "  Force         : $([ "$RELEASE_FORCE" = true ] && echo "${YELLOW}yes — will overwrite existing tag + release${RESET}" || echo "no")"
+  if [[ "$PUBLISH_IMAGE" == true ]]; then
+    msg "  Publish image : yes (${IMAGE_REGISTRY}, context: ${IMAGE_CONTEXT})"
+  fi
   if [[ "$DRY_RUN" == true ]]; then
     msg ""
     msg "  ${YELLOW}${BOLD}DRY RUN — no changes will be made${RESET}"
@@ -2960,6 +3056,12 @@ if [[ -n "$RELEASE_BUMP" ]]; then
     msg "  ${YELLOW}⚠${RESET} Skipped (--no-release)"
   else
     create_github_release "$new_tag"
+  fi
+
+  # ── 5/5 Publish image (optional) ───────────────────────────────
+  if [[ "$PUBLISH_IMAGE" == true ]]; then
+    msg "${BOLD}── 5/5  Publish image ───────────────────────────────────────────${RESET}"
+    publish_image "$new_tag"
   fi
 
   msg ""
