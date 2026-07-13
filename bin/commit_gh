@@ -93,6 +93,7 @@ PUBLISH_IMAGE=false         # --publish-image: build + push a container image on
 IMAGE_CONTEXT="."           # --image-context <dir>: Docker build context (default: repo root)
 IMAGE_NAME=""               # --image-name <name>: image name (default: repo name)
 IMAGE_REGISTRY="ghcr.io"    # --registry <host>: container registry (default: GHCR)
+IMAGE_TAG=""                 # --image-tag <tag>: tag for standalone --publish-image (default: latest git tag)
 
 msg() { [[ $QUIET -eq 0 ]] && echo "$*"; }
 always_msg() { echo "$*"; }
@@ -149,9 +150,10 @@ usage() {
     "  ${BOLD}--generate-notes${RESET}         Auto-generate release notes from pull requests" \
     "  ${BOLD}--read-version-only${RESET}      Print version inventory (VERSION file, script, tag) and exit" \
     "  ${BOLD}--version-file${RESET} ${YELLOW}<path>${RESET}     Version file for --release  ${DIM}(default: VERSION)${RESET}" \
-    "  ${BOLD}--publish-image${RESET}          Build + push a container image  ${DIM}(use with --release)${RESET}" \
+    "  ${BOLD}--publish-image${RESET}          Build + push a container image  ${DIM}(with --release, or standalone)${RESET}" \
     "  ${BOLD}--image-context${RESET} ${YELLOW}<dir>${RESET}     Docker build context  ${DIM}(default: .)${RESET}" \
     "  ${BOLD}--image-name${RESET} ${YELLOW}<name>${RESET}       Image name  ${DIM}(default: repo name)${RESET}" \
+    "  ${BOLD}--image-tag${RESET} ${YELLOW}<tag>${RESET}         Tag to publish  ${DIM}(standalone --publish-image only; default: latest git tag)${RESET}" \
     "  ${BOLD}--registry${RESET} ${YELLOW}<host>${RESET}         Container registry  ${DIM}(default: ghcr.io)${RESET}" \
     "" \
     "  ${BOLD}${GREEN}Commit${RESET}" \
@@ -192,6 +194,8 @@ usage() {
     "  ${CYAN}commit_gh${RESET} --release 2.1.0 --generate-notes" \
     "  ${CYAN}commit_gh${RESET} --release patch --force" \
     "  ${CYAN}commit_gh${RESET} --release patch --publish-image --image-context home --image-name vault-reference-portal" \
+    "  ${CYAN}commit_gh${RESET} --publish-image --image-context home --image-name vault-reference-portal  ${DIM}# republish latest tag, no version bump${RESET}" \
+    "  ${CYAN}commit_gh${RESET} --publish-image --image-context home --image-name vault-reference-portal --image-tag v2.0.3" \
     "  ${CYAN}commit_gh${RESET} --scan" \
     "  ${CYAN}commit_gh${RESET} --read-version-only" \
     "  ${CYAN}commit_gh${RESET} --release minor --dry-run" \
@@ -327,6 +331,11 @@ while [[ $# -gt 0 ]]; do
   --registry)
     [[ -n "${2:-}" ]] || die "--registry requires a value"
     IMAGE_REGISTRY="$2"
+    shift
+    ;;
+  --image-tag)
+    [[ -n "${2:-}" ]] || die "--image-tag requires a value"
+    IMAGE_TAG="$2"
     shift
     ;;
   --tree)
@@ -2770,6 +2779,25 @@ if [[ -n "$ROLLBACK_TAG" ]]; then
   exit 0
 fi
 
+# Standalone --publish-image (no --release): republish an image for an
+# existing tag — e.g. retrying a failed push, or picking up a Dockerfile
+# fix — without bumping the version or creating a new release.
+if [[ "$PUBLISH_IMAGE" == true && -z "$RELEASE_BUMP" ]]; then
+  in_git_repo || die "Not inside a git repository. --publish-image requires an existing repo."
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+
+  publish_tag="$IMAGE_TAG"
+  if [[ -z "$publish_tag" ]]; then
+    publish_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+  fi
+  [[ -n "$publish_tag" ]] || die "No tag found. Use --image-tag <tag> or create a release tag first."
+
+  msg "${BOLD}── Publish image (standalone) ────────────────────────────────────${RESET}"
+  msg "  Tag: $publish_tag"
+  publish_image "$publish_tag"
+  exit 0
+fi
+
 if [[ -n "$CHANGELOG_PREVIEW_BUMP" ]]; then
   preview_changelog "$CHANGELOG_PREVIEW_BUMP"
   exit 0
@@ -2838,12 +2866,6 @@ fi
 if [[ "$RELEASE_FORCE" == true && -z "$RELEASE_BUMP" ]]; then
   always_msg "⚠️  --force is a modifier for --release and has no effect on its own."
   always_msg "   Usage: ${CYAN}commit_gh --release patch --force${RESET}"
-  exit 1
-fi
-
-if [[ "$PUBLISH_IMAGE" == true && -z "$RELEASE_BUMP" ]]; then
-  always_msg "⚠️  --publish-image is a modifier for --release and has no effect on its own."
-  always_msg "   Usage: ${CYAN}commit_gh --release patch --publish-image${RESET}"
   exit 1
 fi
 
