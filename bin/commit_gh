@@ -397,13 +397,18 @@ unstage_blocked_files() {
 write_gitignore() {
   local gi_path=".gitignore"
   if [[ -f "$gi_path" ]]; then
-    local _has_env _has_star_env _has_vault _has_jsonl _has_input _has_output _missing=() _did_append=false
+    local _has_env _has_star_env _has_vault _has_jsonl _has_input _has_output _has_bak _has_bak_dot _missing=() _did_append=false
     grep -qE '^\.env$|^\.env\b' "$gi_path" 2>/dev/null && _has_env=true || _has_env=false
     grep -qE '^\*\.env$' "$gi_path" 2>/dev/null && _has_star_env=true || _has_star_env=false
     grep -qE '^\.vault\.\*$' "$gi_path" 2>/dev/null && _has_vault=true || _has_vault=false
     grep -qE '^\*\.jsonl$' "$gi_path" 2>/dev/null && _has_jsonl=true || _has_jsonl=false
     grep -qE '^input/' "$gi_path" 2>/dev/null && _has_input=true || _has_input=false
     grep -qE '^output/' "$gi_path" 2>/dev/null && _has_output=true || _has_output=false
+    # *.bak covers plain "file.bak"; *.bak.* covers the common "back up before
+    # editing" convention of appending a timestamp after it (file.bak.<ts>) —
+    # neither pattern matches the other, both are needed.
+    grep -qE '^\*\.bak$' "$gi_path" 2>/dev/null && _has_bak=true || _has_bak=false
+    grep -qE '^\*\.bak\.\*$' "$gi_path" 2>/dev/null && _has_bak_dot=true || _has_bak_dot=false
 
     if [[ "$_has_env" == false ]]; then
       msg "⚠️ .gitignore exists but missing .env coverage — appending secrets block..."
@@ -448,6 +453,8 @@ EOF
     [[ "$_has_jsonl" == false ]] && _missing+=("*.jsonl")
     [[ "$_has_input" == false ]] && _missing+=("input/*" "!input/.gitkeep")
     [[ "$_has_output" == false ]] && _missing+=("output/*" "!output/.gitkeep")
+    [[ "$_has_bak" == false ]] && _missing+=("*.bak")
+    [[ "$_has_bak_dot" == false ]] && _missing+=("*.bak.*")
 
     if [[ ${#_missing[@]} -eq 0 ]]; then
       [[ "$_did_append" == false ]] && msg "✅ .gitignore already exists. Skipping."
@@ -512,6 +519,8 @@ desktop.ini
 *.swo
 *~
 *.orig
+*.bak
+*.bak.*
 
 # ── Build artifacts ───────────────────────────────────────────
 dist/
